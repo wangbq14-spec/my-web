@@ -41,13 +41,17 @@ http.interceptors.response.use(
       }
     }
 
+    const responseData = error.response?.data
+    const detail = responseData?.detail
+
     const normalizedError = {
       status: status ?? 0,
       message:
-        error.response?.data?.message ||
+        responseData?.message ||
+        (typeof detail === 'string' ? detail : null) ||
         error.message ||
         '请求失败，请稍后重试',
-      data: error.response?.data ?? null,
+      data: responseData ?? null,
     }
 
     return Promise.reject(normalizedError)
