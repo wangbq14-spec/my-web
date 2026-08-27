@@ -1,5 +1,7 @@
 
 <script setup>
+import { RouterLink } from 'vue-router'
+
 const features = [
   {
     icon: '💬',
@@ -30,10 +32,12 @@ const features = [
         <a href="#features">功能</a>
         <a href="#about">关于</a>
       </nav>
-      <a
+      <RouterLink
         class="nav-cta"
-        href="#start"
-      >登录</a>
+        to="/login"
+      >
+        登录
+      </RouterLink>
     </header>
 
     <section
@@ -47,11 +51,13 @@ const features = [
         让智能真正融入你的每一次思考。
       </p>
       <div class="actions">
-        <a
+        <RouterLink
           id="start"
-          href="#experience"
+          to="/dashboard"
           class="btn btn-primary"
-        >开始体验</a>
+        >
+          开始体验
+        </RouterLink>
         <a
           href="#features"
           class="btn btn-ghost"

@@ -10,5 +10,6 @@ test('首页可以正常打开并点击开始体验', async ({ page }) => {
 
   await button.click()
 
-  await expect(page).toHaveURL(/#experience/)
+  // 未登录点击「开始体验」→ 进入受保护的 /dashboard → 守卫重定向到 /login
+  await expect(page).toHaveURL(/\/login\?redirect=/)
 })
