@@ -1,4 +1,11 @@
 import axios from 'axios'
+import { clearAccessToken, getAccessToken } from '../utils/token'
+
+let unauthorizedHandler = null
+
+export function setUnauthorizedHandler(handler) {
+  unauthorizedHandler = handler
+}
 
 const http = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL,
@@ -10,7 +17,7 @@ const http = axios.create({
 
 http.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('access_token')
+    const token = getAccessToken()
 
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
@@ -28,7 +35,10 @@ http.interceptors.response.use(
     const status = error.response?.status
 
     if (status === 401) {
-      localStorage.removeItem('access_token')
+      clearAccessToken()
+      if (unauthorizedHandler) {
+        unauthorizedHandler()
+      }
     }
 
     const normalizedError = {
