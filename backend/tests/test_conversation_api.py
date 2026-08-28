@@ -147,6 +147,88 @@ def test_delete_unauthorized(client):
     assert resp.status_code == 401
 
 
+def test_rename_conversation_success_and_persists(client):
+    token = _register_and_login(client, "alice")
+    created = client.post(
+        "/api/conversations", json={"title": "旧标题"}, headers=_auth(token)
+    ).json()
+
+    resp = client.patch(
+        f"/api/conversations/{created['id']}",
+        json={"title": "新标题"},
+        headers=_auth(token),
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["title"] == "新标题"
+    persisted = client.get(
+        f"/api/conversations/{created['id']}", headers=_auth(token)
+    )
+    assert persisted.json()["title"] == "新标题"
+
+
+def test_rename_other_users_conversation_returns_404(client):
+    token_a = _register_and_login(client, "alice")
+    token_b = _register_and_login(client, "bob")
+    created_b = client.post(
+        "/api/conversations", json={"title": "B1"}, headers=_auth(token_b)
+    ).json()
+
+    resp = client.patch(
+        f"/api/conversations/{created_b['id']}",
+        json={"title": "其他用户不能改"},
+        headers=_auth(token_a),
+    )
+
+    assert resp.status_code == 404
+
+
+def test_rename_nonexistent_conversation_returns_404(client):
+    token = _register_and_login(client, "alice")
+
+    resp = client.patch(
+        "/api/conversations/999999", json={"title": "不存在"}, headers=_auth(token)
+    )
+
+    assert resp.status_code == 404
+
+
+def test_rename_empty_title_returns_422(client):
+    token = _register_and_login(client, "alice")
+
+    resp = client.patch("/api/conversations/1", json={"title": ""}, headers=_auth(token))
+
+    assert resp.status_code == 422
+
+
+def test_rename_title_too_long_returns_422(client):
+    token = _register_and_login(client, "alice")
+
+    resp = client.patch(
+        "/api/conversations/1", json={"title": "x" * 201}, headers=_auth(token)
+    )
+
+    assert resp.status_code == 422
+
+
+def test_rename_body_with_user_id_returns_422(client):
+    token = _register_and_login(client, "alice")
+
+    resp = client.patch(
+        "/api/conversations/1",
+        json={"title": "x", "user_id": 1},
+        headers=_auth(token),
+    )
+
+    assert resp.status_code == 422
+
+
+def test_rename_unauthorized(client):
+    resp = client.patch("/api/conversations/1", json={"title": "x"})
+
+    assert resp.status_code == 401
+
+
 def test_create_with_user_id_field_422(client):
     token_a = _register_and_login(client, "alice")
 
@@ -181,3 +263,21 @@ def test_list_order_updated_at_desc_id_desc(client):
     result = client.get("/api/conversations", headers=_auth(token_a)).json()
 
     assert [c["title"] for c in result] == ["t3", "t2", "t1"]
+
+
+def test_update_service_no_commit():
+    import inspect
+
+    from app.services.conversation import update_conversation
+
+    source = inspect.getsource(update_conversation)
+    assert ".commit(" not in source
+
+
+def test_update_router_commits_once():
+    import inspect
+
+    from app.api.routes import conversations
+
+    source = inspect.getsource(conversations.update_conversation)
+    assert source.count("db.commit()") == 1

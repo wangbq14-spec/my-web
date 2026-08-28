@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Literal
 
 from pydantic import BaseModel
@@ -11,6 +11,11 @@ class LLMMessage(BaseModel):
 
 
 class LLMResponse(BaseModel):
+    content: str
+    model: str | None = None
+
+
+class LLMChunk(BaseModel):
     content: str
     model: str | None = None
 
@@ -39,4 +44,13 @@ class LLMProvider(ABC):
         *,
         model: str | None = None,
     ) -> LLMResponse:
+        raise NotImplementedError
+
+    @abstractmethod
+    def stream(
+        self,
+        messages: Sequence[LLMMessage],
+        *,
+        model: str | None = None,
+    ) -> Iterator[LLMChunk]:
         raise NotImplementedError

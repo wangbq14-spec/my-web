@@ -10,6 +10,12 @@ class ConversationCreate(BaseModel):
     model: str | None = Field(default=None, max_length=100)
 
 
+class ConversationUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=200)
+
+
 class ConversationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

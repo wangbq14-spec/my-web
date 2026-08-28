@@ -1,4 +1,8 @@
+import json
+from itertools import chain
+
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.api.routes.auth import get_current_user
@@ -11,7 +15,7 @@ from app.llm.base import (
 )
 from app.models.user import User
 from app.schemas.chat import ChatRequest, ChatResponse
-from app.schemas.conversation import ConversationCreate, ConversationOut
+from app.schemas.conversation import ConversationCreate, ConversationOut, ConversationUpdate
 from app.schemas.message import MessageCreate, MessageOut
 from app.services import chat as chat_service
 from app.services import conversation as conversation_service
@@ -62,6 +66,28 @@ def get_conversation(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="会话不存在",
         )
+    return conversation
+
+
+@router.patch("/{conversation_id}", response_model=ConversationOut)
+def update_conversation(
+    conversation_id: int,
+    data: ConversationUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ConversationOut:
+    conversation = conversation_service.update_conversation(
+        session=db,
+        user_id=current_user.id,
+        conversation_id=conversation_id,
+        data=data,
+    )
+    if conversation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="会话不存在",
+        )
+    db.commit()
     return conversation
 
 
@@ -174,3 +200,163 @@ def chat(
     db.commit()
 
     return ChatResponse(user_message=user_message, assistant_message=assistant_message)
+
+
+def _sse(event: str, payload: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _stream_error_code(exc: LLMError) -> str:
+    if isinstance(exc, LLMConfigurationError):
+        return "configuration_error"
+    if isinstance(exc, LLMTimeoutError):
+        return "timeout"
+    if isinstance(exc, LLMUpstreamError):
+        return "upstream_error"
+    return "llm_error"
+
+
+def _stream_error_message(exc: LLMError) -> str:
+    if isinstance(exc, LLMConfigurationError):
+        return "LLM 服务未配置"
+    if isinstance(exc, LLMTimeoutError):
+        return "LLM 请求超时"
+    if isinstance(exc, LLMUpstreamError):
+        return "LLM 上游服务错误"
+    return "LLM 服务错误"
+
+
+@router.post("/{conversation_id}/chat/stream")
+def chat_stream(
+    conversation_id: int,
+    data: ChatRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    user_id = current_user.id
+    content = data.content
+
+    conversation = conversation_service.get_conversation(db, user_id, conversation_id)
+    if conversation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="会话不存在",
+        )
+
+    stream = chat_service.stream_chat_message(
+        session=db,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        content=content,
+    )
+    try:
+        first_event = next(stream)
+    except LLMError as exc:
+        db.rollback()
+        raise _map_llm_error(exc) from exc
+
+    def event_generator():
+        yield _sse("start", {"conversation_id": conversation_id})
+
+        committed = False
+        try:
+            for event in chain((first_event,), stream):
+                if event.type == "delta":
+                    yield _sse("delta", {"content": event.content})
+                elif event.type == "done":
+                    db.commit()
+                    committed = True
+                    yield _sse(
+                        "done",
+                        {
+                            "user_message_id": event.user_message_id,
+                            "assistant_message_id": event.assistant_message_id,
+                            "model": event.model,
+                        },
+                    )
+                elif event.type == "not_found":
+                    yield _sse(
+                        "error", {"code": "not_found", "message": "会话不存在"}
+                    )
+        except LLMError as exc:
+            yield _sse(
+                "error",
+                {
+                    "code": _stream_error_code(exc),
+                    "message": _stream_error_message(exc),
+                },
+            )
+        finally:
+            if not committed:
+                db.rollback()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.post("/{conversation_id}/regenerate/stream")
+def regenerate_stream(
+    conversation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    user_id = current_user.id
+    conversation = conversation_service.get_conversation(db, user_id, conversation_id)
+    if conversation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="会话不存在",
+        )
+
+    stream = chat_service.regenerate_chat_message(db, user_id, conversation_id)
+    try:
+        first_event = next(stream)
+    except LLMError as exc:
+        db.rollback()
+        raise _map_llm_error(exc) from exc
+
+    def event_generator():
+        yield _sse("start", {"conversation_id": conversation_id})
+
+        committed = False
+        try:
+            for event in chain((first_event,), stream):
+                if event.type == "delta":
+                    yield _sse("delta", {"content": event.content})
+                elif event.type == "done":
+                    db.commit()
+                    committed = True
+                    yield _sse(
+                        "done",
+                        {
+                            "assistant_message_id": event.assistant_message_id,
+                            "model": event.model,
+                        },
+                    )
+                elif event.type == "no_user_message":
+                    yield _sse(
+                        "error",
+                        {"code": "no_user_message", "message": "没有可重新生成的用户消息"},
+                    )
+                elif event.type == "not_found":
+                    yield _sse("error", {"code": "not_found", "message": "会话不存在"})
+        except LLMError as exc:
+            yield _sse(
+                "error",
+                {
+                    "code": _stream_error_code(exc),
+                    "message": _stream_error_message(exc),
+                },
+            )
+        finally:
+            if not committed:
+                db.rollback()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache"},
+    )

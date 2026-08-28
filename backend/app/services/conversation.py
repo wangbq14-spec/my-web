@@ -2,7 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.conversation import Conversation
-from app.schemas.conversation import ConversationCreate
+from app.schemas.conversation import ConversationCreate, ConversationUpdate
 
 
 def create_conversation(
@@ -45,6 +45,20 @@ def get_conversation(
         )
     )
     return result.scalar_one_or_none()
+
+
+def update_conversation(
+    session: Session,
+    user_id: int,
+    conversation_id: int,
+    data: ConversationUpdate,
+) -> Conversation | None:
+    conversation = get_conversation(session, user_id, conversation_id)
+    if conversation is None:
+        return None
+    conversation.title = data.title
+    session.flush()
+    return conversation
 
 
 def delete_conversation(
