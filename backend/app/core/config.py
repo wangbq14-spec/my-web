@@ -27,6 +27,12 @@ class Settings(BaseSettings):
         "http://localhost:5173",
     ]
 
+    # LLM (OpenAI-compatible provider)
+    LLM_API_KEY: str = ""
+    LLM_BASE_URL: str = ""
+    LLM_MODEL: str = ""
+    LLM_TIMEOUT: float = 30.0
+
 
 @lru_cache
 def get_settings() -> Settings:
