@@ -51,4 +51,18 @@ describe('conversation API', () => {
 
     expect(http.patch).toHaveBeenCalledWith('/conversations/2', { title: 'new title' })
   })
+
+  it('returns the list response so callers can sort and filter it client-side', async () => {
+    const conversations = [{ id: 2, title: '最新对话', updated_at: '2026-08-29T08:00:00Z' }]
+    http.get.mockResolvedValue(conversations)
+
+    await expect(listConversations()).resolves.toBe(conversations)
+  })
+
+  it('returns the created conversation so the caller can make it active immediately', async () => {
+    const conversation = { id: 3, title: '新建对话' }
+    http.post.mockResolvedValue(conversation)
+
+    await expect(createConversation({ title: '新建对话' })).resolves.toBe(conversation)
+  })
 })

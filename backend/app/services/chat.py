@@ -12,6 +12,7 @@ from app.rag.context import Citation, build_citations, build_rag_system_prompt
 from app.rag.embeddings.base import EmbeddingError
 from app.rag.retrieval import retrieve
 from app.services.conversation import get_conversation
+from app.services.title import maybe_auto_title
 
 
 @dataclass
@@ -77,6 +78,7 @@ def send_chat_message(
 
     conversation.updated_at = utcnow_naive()
     session.flush()
+    maybe_auto_title(conversation, content)
 
     return ChatResult(
         user_message=user_message,
@@ -176,6 +178,7 @@ def stream_chat_message(
 
     conversation.updated_at = utcnow_naive()
     session.flush()
+    maybe_auto_title(conversation, content)
 
     yield StreamEvent(
         type="done",

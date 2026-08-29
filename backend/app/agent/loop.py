@@ -12,6 +12,7 @@ from app.llm.base import LLMMessage, LLMProvider
 from app.models.message import Message
 from app.models.user import utcnow_naive
 from app.services.conversation import get_conversation
+from app.services.title import maybe_auto_title
 
 
 @dataclass
@@ -156,6 +157,7 @@ def run_agent(
         session.refresh(assistant_message)
         conversation.updated_at = utcnow_naive()
         session.flush()
+        maybe_auto_title(conversation, content)
         yield AgentEvent(
             type="done",
             user_message_id=user_message.id,

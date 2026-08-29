@@ -31,6 +31,14 @@ describe('router authentication guard', () => {
     expect(router.currentRoute.value.name).toBe('login')
   })
 
+  it('keeps the protected conversation path as the post-login redirect target', async () => {
+    authStore.isAuthenticated = false
+
+    await router.push('/chat')
+
+    expect(router.currentRoute.value.fullPath).toBe('/login?redirect=/chat')
+  })
+
   it('redirects an unauthenticated user from /knowledge to /login', async () => {
     authStore.isAuthenticated = false
 

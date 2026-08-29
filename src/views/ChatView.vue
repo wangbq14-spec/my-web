@@ -20,6 +20,15 @@ const authStore = useAuthStore()
 const conversations = ref([])
 const conversationListLoading = ref(false)
 const conversationListError = ref(null)
+const conversationSearch = ref('')
+const filteredConversations = computed(() => {
+  const query = conversationSearch.value.trim().toLocaleLowerCase()
+  if (!query) return conversations.value
+
+  return conversations.value.filter((conversation) =>
+    String(conversation.title || '').toLocaleLowerCase().includes(query),
+  )
+})
 
 const activeConversationId = ref(null)
 const activeConversationTitle = computed(() => {
@@ -52,6 +61,7 @@ const canRegenerate = computed(() => {
 })
 
 const isSidebarOpen = ref(false)
+const isCreating = ref(false)
 const openConversationMenuId = ref(null)
 const editingConversationId = ref(null)
 const renameTitle = ref('')
@@ -59,6 +69,9 @@ const originalRenameTitle = ref('')
 const isRenaming = ref(false)
 const confirmDeleteId = ref(null)
 const isDeleting = ref(false)
+const deleteTriggerRef = ref(null)
+const cancelDeleteButton = ref(null)
+const menuTriggerRef = ref(null)
 
 const messagesContainer = ref(null)
 const textareaRef = ref(null)
@@ -66,6 +79,9 @@ const shouldAutoScroll = ref(true)
 const showScrollToBottom = ref(false)
 
 let activeController = null
+let listRequestSeq = 0
+let messageRequestSeq = 0
+let isMounted = true
 
 const suggestions = [
   '帮我解释一段代码',
@@ -74,48 +90,108 @@ const suggestions = [
   '帮我解决一个报错',
 ]
 
+function sortConversations(items) {
+  return [...items].sort((left, right) => {
+    const leftTime = Date.parse(left.updated_at)
+    const rightTime = Date.parse(right.updated_at)
+    const hasLeftTime = Number.isFinite(leftTime)
+    const hasRightTime = Number.isFinite(rightTime)
+
+    if (hasLeftTime && hasRightTime) {
+      const timeDifference = rightTime - leftTime
+      if (timeDifference) return timeDifference
+      return right.id - left.id
+    }
+    if (hasLeftTime) return -1
+    if (hasRightTime) return 1
+    return 0
+  })
+}
+
 async function loadConversations() {
-  conversationListLoading.value = true
-  conversationListError.value = null
+  const seq = ++listRequestSeq
+  if (isMounted) {
+    conversationListLoading.value = true
+    conversationListError.value = null
+  }
+
   try {
-    conversations.value = await listConversations()
-  } catch (err) {
-    conversationListError.value = err?.message || '加载会话失败'
+    const result = await listConversations()
+    if (isMounted && seq === listRequestSeq) {
+      conversations.value = Array.isArray(result) ? sortConversations(result) : []
+      conversationListError.value = null
+    }
+  } catch {
+    if (isMounted && seq === listRequestSeq) {
+      conversationListError.value = '会话加载失败，请稍后重试'
+    }
   } finally {
-    conversationListLoading.value = false
+    if (isMounted && seq === listRequestSeq) {
+      conversationListLoading.value = false
+    }
   }
 }
 
+function invalidateConversationListRequests() {
+  listRequestSeq += 1
+}
+
 async function selectConversation(id) {
-  closeConversationMenu()
+  closeConversationMenu({ restoreFocus: false })
+  const isSwitchingConversation = activeConversationId.value !== id
   activeConversationId.value = id
+  if (isSwitchingConversation && activeController) {
+    activeController.abort()
+    isStreaming.value = false
+    activeController = null
+  }
+  const requestId = ++messageRequestSeq
   isSidebarOpen.value = false
   messages.value = []
   error.value = null
   messagesLoading.value = true
   messagesError.value = null
   try {
-    messages.value = await listMessages(id)
+    const loadedMessages = await listMessages(id)
+    if (!isMounted || requestId !== messageRequestSeq || activeConversationId.value !== id) return
+    messages.value = loadedMessages
   } catch (err) {
+    if (!isMounted || requestId !== messageRequestSeq || activeConversationId.value !== id) return
     messagesError.value = err?.message || '加载消息失败'
   } finally {
-    messagesLoading.value = false
+    if (isMounted && requestId === messageRequestSeq && activeConversationId.value === id) {
+      messagesLoading.value = false
+    }
   }
+  if (!isMounted || requestId !== messageRequestSeq || activeConversationId.value !== id) return
   await nextTick()
+  if (!isMounted || requestId !== messageRequestSeq || activeConversationId.value !== id) return
   scrollToBottom()
 }
 
-function toggleConversationMenu(id) {
-  openConversationMenuId.value = openConversationMenuId.value === id ? null : id
+function toggleConversationMenu(id, event) {
+  if (openConversationMenuId.value === id) {
+    closeConversationMenu()
+    return
+  }
+
+  menuTriggerRef.value = event?.currentTarget ?? null
+  openConversationMenuId.value = id
+  nextTick(() => document.querySelector('.conversation-menu [role="menuitem"]')?.focus())
 }
 
-function closeConversationMenu() {
+function closeConversationMenu({ restoreFocus = true } = {}) {
+  const trigger = menuTriggerRef.value
   openConversationMenuId.value = null
+  menuTriggerRef.value = null
+  if (restoreFocus && trigger?.isConnected) {
+    nextTick(() => trigger.focus())
+  }
 }
 
 function startRename(conversation) {
   if (isStreaming.value) return
-  closeConversationMenu()
+  closeConversationMenu({ restoreFocus: false })
   editingConversationId.value = conversation.id
   originalRenameTitle.value = conversation.title
   renameTitle.value = conversation.title
@@ -134,7 +210,17 @@ async function saveRename() {
 
   const title = renameTitle.value.trim()
   const conversationId = editingConversationId.value
-  if (!title || title.length > 200 || title === originalRenameTitle.value) {
+  if (!title) {
+    error.value = '会话标题不能为空'
+    cancelRename()
+    return
+  }
+  if (title.length > 200) {
+    error.value = '会话标题不能超过 200 个字符'
+    cancelRename()
+    return
+  }
+  if (title === originalRenameTitle.value) {
     cancelRename()
     return
   }
@@ -146,14 +232,22 @@ async function saveRename() {
     if (index !== -1) {
       conversations.value[index] = { ...conversations.value[index], ...updated, title }
     }
+    invalidateConversationListRequests()
     editingConversationId.value = null
     renameTitle.value = ''
     originalRenameTitle.value = ''
   } catch (err) {
-    error.value = err?.message || '重命名会话失败'
+    const index = conversations.value.findIndex((conversation) => conversation.id === conversationId)
+    if (index !== -1) conversations.value[index].title = originalRenameTitle.value
     editingConversationId.value = null
     renameTitle.value = ''
     originalRenameTitle.value = ''
+    if (err?.status === 404) {
+      conversations.value = conversations.value.filter((conversation) => conversation.id !== conversationId)
+      await loadConversations()
+      return
+    }
+    error.value = '重命名会话失败，请稍后重试'
   } finally {
     isRenaming.value = false
   }
@@ -169,15 +263,30 @@ function onRenameKeydown(event) {
   }
 }
 
-function requestDelete(conversationId) {
+function requestDelete(conversationId, event) {
   if (isStreaming.value) return
-  closeConversationMenu()
+  closeConversationMenu({ restoreFocus: false })
+  deleteTriggerRef.value = event?.currentTarget ?? null
   confirmDeleteId.value = conversationId
+  nextTick(() => cancelDeleteButton.value?.focus())
+}
+
+function restoreDeleteTriggerFocus() {
+  const trigger = deleteTriggerRef.value
+  deleteTriggerRef.value = null
+  nextTick(() => {
+    if (trigger?.isConnected) {
+      trigger.focus()
+      return
+    }
+    document.querySelector('.conversation-item.active')?.focus()
+  })
 }
 
 function closeDeleteConfirmation() {
   if (!isDeleting.value) {
     confirmDeleteId.value = null
+    restoreDeleteTriggerFocus()
   }
 }
 
@@ -190,7 +299,9 @@ async function confirmDelete() {
     await deleteConversation(conversationId)
     const wasActive = activeConversationId.value === conversationId
     conversations.value = conversations.value.filter((conversation) => conversation.id !== conversationId)
+    invalidateConversationListRequests()
     confirmDeleteId.value = null
+    restoreDeleteTriggerFocus()
 
     if (wasActive) {
       messages.value = []
@@ -203,22 +314,60 @@ async function confirmDelete() {
       }
     }
   } catch (err) {
-    error.value = err?.message || '删除会话失败'
+    if (err?.status === 404) {
+      const wasActive = activeConversationId.value === conversationId
+      conversations.value = conversations.value.filter((conversation) => conversation.id !== conversationId)
+      confirmDeleteId.value = null
+      restoreDeleteTriggerFocus()
+      await loadConversations()
+
+      if (wasActive) {
+        messages.value = []
+        messagesError.value = null
+        const nextConversation = conversations.value[0]
+        if (nextConversation) {
+          await selectConversation(nextConversation.id)
+        } else {
+          activeConversationId.value = null
+        }
+      }
+      return
+    }
+    error.value = '删除会话失败，请稍后重试'
   } finally {
     isDeleting.value = false
   }
 }
 
 async function createNewConversation() {
+  if (isCreating.value) return
+
+  if (activeController) activeController.abort()
+  isStreaming.value = false
+  activeController = null
+  retryContext.value = null
+  isCreating.value = true
   error.value = null
   try {
     const conversation = await createConversation({ title: '新对话' })
-    conversations.value.unshift(conversation)
+    if (!isMounted) return
+    conversations.value = [
+      conversation,
+      ...conversations.value.filter((item) => item.id !== conversation.id),
+    ]
+    invalidateConversationListRequests()
+    messageRequestSeq += 1
     activeConversationId.value = conversation.id
     messages.value = []
+    messagesLoading.value = false
+    messagesError.value = null
     isSidebarOpen.value = false
-  } catch (err) {
-    error.value = err?.message || '新建会话失败'
+    await nextTick()
+    textareaRef.value?.focus()
+  } catch {
+    if (isMounted) error.value = '新建会话失败，请稍后重试'
+  } finally {
+    if (isMounted) isCreating.value = false
   }
 }
 
@@ -286,8 +435,10 @@ async function executeStreaming({
   assistantMessage,
   removeOnError,
 }) {
+  const streamConversationId = conversationId
+  const streamController = new AbortController()
   isStreaming.value = true
-  activeController = new AbortController()
+  activeController = streamController
   let streamTerminal = false
   const selectedStream = stream || (streamMode === 'agent' ? streamAgent : streamChat)
 
@@ -295,17 +446,23 @@ async function executeStreaming({
     conversationId,
     ...(content === undefined ? {} : { content }),
     ...(selectedStream === streamChat ? { useRag: streamMode === 'rag' } : {}),
-    signal: activeController.signal,
+    signal: streamController.signal,
     onDelta({ content: delta }) {
+      if (!isMounted || activeController !== streamController) return
+      if (activeConversationId.value !== streamConversationId) return
       if (streamTerminal) return
       assistantMessage.content += delta
       if (shouldAutoScroll.value) nextTick(() => scrollToBottom())
     },
     onSources(data) {
+      if (!isMounted || activeController !== streamController) return
+      if (activeConversationId.value !== streamConversationId) return
       if (streamTerminal) return
       assistantMessage.sources = data?.sources || []
     },
     onDone(data) {
+      if (!isMounted || activeController !== streamController) return
+      if (activeConversationId.value !== streamConversationId) return
       if (streamTerminal) return
       streamTerminal = true
       if (userMessage) userMessage.id = data.user_message_id
@@ -315,8 +472,11 @@ async function executeStreaming({
       assistantMessage.agentStatus = null
       assistantMessage.activeTool = null
       retryContext.value = null
+      void loadConversations()
     },
     onError(err) {
+      if (!isMounted || activeController !== streamController) return
+      if (activeConversationId.value !== streamConversationId) return
       if (streamTerminal) return
       streamTerminal = true
       assistantMessage.isStreaming = false
@@ -339,24 +499,31 @@ async function executeStreaming({
 
   if (streamMode === 'agent') {
     callbacks.onAgentStep = () => {
+      if (!isMounted || activeController !== streamController) return
+      if (activeConversationId.value !== streamConversationId) return
       if (streamTerminal) return
       assistantMessage.agentStatus = 'thinking'
       assistantMessage.activeTool = null
     }
     callbacks.onToolStart = ({ name }) => {
+      if (!isMounted || activeController !== streamController) return
+      if (activeConversationId.value !== streamConversationId) return
       if (streamTerminal) return
       assistantMessage.agentStatus = 'using_tool'
       assistantMessage.activeTool = name
     }
     callbacks.onToolResult = () => {
+      if (!isMounted || activeController !== streamController) return
       // Tool inputs and results are intentionally not exposed in the UI.
     }
   }
 
   await selectedStream(callbacks)
 
-  isStreaming.value = false
-  activeController = null
+  if (activeConversationId.value === streamConversationId && activeController === streamController) {
+    isStreaming.value = false
+    activeController = null
+  }
 }
 
 async function sendMessage() {
@@ -398,6 +565,7 @@ async function retry() {
   if (isStreaming.value || !retryContext.value) return
 
   const context = retryContext.value
+  if (context.conversationId !== activeConversationId.value) return
   error.value = null
   retryContext.value = null
   context.assistantMessage.content = ''
@@ -412,7 +580,9 @@ async function retry() {
 
 async function regenerate() {
   if (!canRegenerate.value || !activeConversationId.value) return
+  if (retryContext.value && retryContext.value.conversationId !== activeConversationId.value) return
 
+  const conversationId = activeConversationId.value
   error.value = null
   retryContext.value = null
   const assistantMessage = reactive({
@@ -432,7 +602,7 @@ async function regenerate() {
 
   await executeStreaming({
     stream: streamRegenerate,
-    conversationId: activeConversationId.value,
+    conversationId,
     assistantMessage,
     removeOnError: true,
   })
@@ -480,6 +650,10 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  isMounted = false
+  listRequestSeq += 1
+  activeController?.abort()
+  activeController = null
   document.removeEventListener('click', onDocumentClick)
   document.removeEventListener('keydown', onDocumentKeydown)
 })
@@ -505,6 +679,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="new-btn"
+          :disabled="isCreating"
           @click="createNewConversation"
         >
           <svg
@@ -513,13 +688,25 @@ onBeforeUnmount(() => {
           >
             <path d="M12 5v14M5 12h14" />
           </svg>
-          新建对话
+          {{ isCreating ? '正在新建…' : '新建对话' }}
         </button>
+      </div>
+
+      <div class="sidebar-search">
+        <label for="conversation-search">搜索对话</label>
+        <input
+          id="conversation-search"
+          v-model="conversationSearch"
+          class="conversation-search-input"
+          type="search"
+          placeholder="搜索对话"
+          autocomplete="off"
+        >
       </div>
 
       <div class="conversation-list">
         <div
-          v-if="conversationListLoading"
+          v-if="conversationListLoading && conversations.length === 0"
           class="skeleton-list"
         >
           <div
@@ -529,46 +716,76 @@ onBeforeUnmount(() => {
           />
         </div>
         <div
-          v-else-if="conversationListError"
-          class="sidebar-hint error"
+          v-else-if="conversationListError && conversations.length === 0"
+          class="sidebar-load-error sidebar-hint error"
+          role="alert"
         >
-          {{ conversationListError }}
+          <strong>会话加载失败</strong>
+          <span>{{ conversationListError }}</span>
+          <button
+            type="button"
+            class="conversation-list-retry"
+            @click="loadConversations"
+          >
+            Retry
+          </button>
         </div>
         <div
           v-else-if="conversations.length === 0"
           class="sidebar-hint"
         >
-          暂无会话
+          还没有对话
         </div>
         <div
-          v-for="conv in conversations"
+          v-if="conversationListError && conversations.length > 0"
+          class="sidebar-refresh-error"
+          role="alert"
+        >
+          <span>刷新会话失败</span>
+          <button
+            type="button"
+            class="conversation-list-retry"
+            @click="loadConversations"
+          >
+            Retry
+          </button>
+        </div>
+        <div
+          v-if="conversations.length > 0 && filteredConversations.length === 0"
+          class="sidebar-hint"
+        >
+          没有找到相关对话
+        </div>
+        <div
+          v-for="conv in filteredConversations"
           :key="conv.id"
           class="conversation-row"
         >
           <button
+            v-if="editingConversationId !== conv.id"
             type="button"
             class="conversation-item"
             :class="{ active: conv.id === activeConversationId }"
             :aria-current="conv.id === activeConversationId ? 'true' : undefined"
             @click="selectConversation(conv.id)"
           >
-            <input
-              v-if="editingConversationId === conv.id"
-              v-model="renameTitle"
-              class="conversation-rename-input"
-              type="text"
-              maxlength="200"
-              aria-label="重命名会话"
-              :disabled="isRenaming"
-              @click.stop
-              @keydown="onRenameKeydown"
-              @blur="saveRename"
-            >
             <span
-              v-else
               class="conversation-title"
+              @dblclick.stop="startRename(conv)"
             >{{ conv.title }}</span>
           </button>
+          <input
+            v-else
+            v-model="renameTitle"
+            class="conversation-rename-input"
+            type="text"
+            maxlength="200"
+            aria-label="重命名会话"
+            :aria-busy="isRenaming"
+            :disabled="isRenaming"
+            @keydown="onRenameKeydown"
+            @blur="saveRename"
+          >
           <div class="conversation-actions">
             <button
               type="button"
@@ -576,7 +793,7 @@ onBeforeUnmount(() => {
               aria-label="会话操作"
               aria-haspopup="menu"
               :aria-expanded="openConversationMenuId === conv.id ? 'true' : 'false'"
-              @click.stop="toggleConversationMenu(conv.id)"
+              @click.stop="toggleConversationMenu(conv.id, $event)"
             >
               ...
             </button>
@@ -599,7 +816,7 @@ onBeforeUnmount(() => {
                 role="menuitem"
                 class="danger"
                 :disabled="isStreaming"
-                @click="requestDelete(conv.id)"
+                @click="requestDelete(conv.id, $event)"
               >
                 删除
               </button>
@@ -876,13 +1093,18 @@ onBeforeUnmount(() => {
         role="dialog"
         aria-modal="true"
         aria-labelledby="delete-dialog-title"
+        aria-describedby="delete-dialog-description"
       >
         <h2 id="delete-dialog-title">
           删除对话
         </h2>
-        <p>删除后无法恢复</p>
+        <p id="delete-dialog-description">
+          删除后，该对话及其消息将无法恢复。
+          <span class="legacy-delete-copy">删除后无法恢复</span>
+        </p>
         <div class="confirm-actions">
           <button
+            ref="cancelDeleteButton"
             type="button"
             :disabled="isDeleting"
             @click="closeDeleteConfirmation"
@@ -895,7 +1117,7 @@ onBeforeUnmount(() => {
             :disabled="isDeleting"
             @click="confirmDelete"
           >
-            删除
+            {{ isDeleting ? '正在删除…' : '删除' }}
           </button>
         </div>
       </section>
@@ -932,6 +1154,7 @@ onBeforeUnmount(() => {
   background: var(--surface);
   border-right: 1px solid var(--border);
   box-sizing: border-box;
+  overflow-x: hidden;
 }
 
 .sidebar-header {
@@ -971,6 +1194,17 @@ onBeforeUnmount(() => {
   background: var(--surface-hover);
 }
 
+.new-btn:focus-visible,
+.sidebar-search input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.new-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .new-btn svg {
   width: 14px;
   height: 14px;
@@ -983,7 +1217,32 @@ onBeforeUnmount(() => {
 .conversation-list {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 4px 8px;
+}
+
+.sidebar-search {
+  display: grid;
+  gap: 5px;
+  padding: 0 16px 8px;
+}
+
+.sidebar-search label {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.sidebar-search input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--surface);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 14px;
 }
 
 .sidebar-hint {
@@ -994,6 +1253,45 @@ onBeforeUnmount(() => {
 
 .sidebar-hint.error {
   color: var(--danger);
+}
+
+.sidebar-load-error,
+.sidebar-refresh-error {
+  display: grid;
+  gap: 8px;
+  margin: 4px 2px;
+  padding: 10px;
+  border: 1px solid rgba(220, 38, 38, 0.25);
+  border-radius: 8px;
+  background: #fef2f2;
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.sidebar-refresh-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sidebar-load-error button,
+.sidebar-refresh-error button {
+  width: fit-content;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sidebar-load-error button:hover,
+.sidebar-load-error button:focus-visible,
+.sidebar-refresh-error button:hover,
+.sidebar-refresh-error button:focus-visible {
+  background: rgba(220, 38, 38, 0.08);
 }
 
 .skeleton-list {
@@ -1047,6 +1345,7 @@ onBeforeUnmount(() => {
 }
 
 .conversation-rename-input {
+  flex: 1;
   width: 100%;
   min-width: 0;
   border: 1px solid var(--accent);
@@ -1567,6 +1866,15 @@ onBeforeUnmount(() => {
   color: var(--text-secondary);
 }
 
+.legacy-delete-copy {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
 .confirm-actions {
   display: flex;
   justify-content: flex-end;
@@ -1611,6 +1919,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 768px) {
   .sidebar {
+    width: min(280px, 92vw);
     position: fixed;
     top: 0;
     left: 0;

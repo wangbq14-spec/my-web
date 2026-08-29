@@ -33,6 +33,7 @@ vi.mock('vue-router', () => ({
 }))
 
 import {
+  createConversation,
   deleteConversation,
   listConversations,
   updateConversation,
@@ -59,6 +60,16 @@ async function send(wrapper, text) {
 
 function modeButton(wrapper, label) {
   return wrapper.findAll('.mode-btn').find((button) => button.text() === label)
+}
+
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((promiseResolve, promiseReject) => {
+    resolve = promiseResolve
+    reject = promiseReject
+  })
+  return { promise, resolve, reject }
 }
 
 describe('ChatView', () => {
@@ -657,12 +668,249 @@ describe('ChatView', () => {
   it('closes the operation menu with Escape', async () => {
     listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
 
-    const wrapper = await mountChat()
-    await wrapper.find('.conversation-more').trigger('click')
+    const wrapper = mount(ChatView, { attachTo: document.body })
+    await flushPromises()
+    const menuTrigger = wrapper.find('.conversation-more')
+    await menuTrigger.trigger('click')
+    expect(document.activeElement).toBe(wrapper.find('.conversation-menu button').element)
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await flushPromises()
 
     expect(wrapper.find('.conversation-menu').exists()).toBe(false)
+    expect(document.activeElement).toBe(menuTrigger.element)
+    wrapper.unmount()
+  })
+
+  it('does not let a stale message request overwrite the newly selected conversation', async () => {
+    const firstRequest = deferred()
+    const secondRequest = deferred()
+    listConversations.mockResolvedValue([
+      { id: 1, title: 'Conversation one' },
+      { id: 2, title: 'Conversation two' },
+    ])
+    listMessages
+      .mockReturnValueOnce(firstRequest.promise)
+      .mockReturnValueOnce(secondRequest.promise)
+
+    const wrapper = await mountChat()
+    const conversations = wrapper.findAll('.conversation-item')
+    await conversations[0].trigger('click')
+    await conversations[1].trigger('click')
+    secondRequest.resolve([{ id: 2, role: 'assistant', content: 'Current conversation' }])
+    await flushPromises()
+    firstRequest.resolve([{ id: 1, role: 'assistant', content: 'Stale conversation' }])
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Current conversation')
+    expect(wrapper.text()).not.toContain('Stale conversation')
+  })
+
+  it('does not leave message loading active when creating a conversation invalidates an older request', async () => {
+    const oldRequest = deferred()
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockReturnValue(oldRequest.promise)
+    createConversation.mockResolvedValue({ id: 2, title: 'New conversation' })
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    expect(wrapper.find('.skeleton-message').exists()).toBe(true)
+
+    await wrapper.find('.new-btn').trigger('click')
+    await flushPromises()
+    oldRequest.resolve([{ id: 1, role: 'assistant', content: 'Stale message' }])
+    await flushPromises()
+
+    expect(wrapper.find('.skeleton-message').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Stale message')
+  })
+
+  it('aborts an in-flight stream before creating a conversation and allows the new conversation to send', async () => {
+    const abortSpy = vi.fn()
+    vi.stubGlobal(
+      'AbortController',
+      class {
+        constructor() {
+          this.signal = {}
+          this.abort = abortSpy
+        }
+      },
+    )
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation A' }])
+    listMessages.mockResolvedValue([])
+    createConversation.mockResolvedValue({ id: 2, title: 'New conversation' })
+    let oldCallbacks
+    streamChat.mockImplementation((handlers) => {
+      if (!oldCallbacks) oldCallbacks = handlers
+      return new Promise(() => {})
+    })
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    await send(wrapper, 'first request')
+    await wrapper.find('.new-btn').trigger('click')
+    await flushPromises()
+
+    expect(abortSpy).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('.send-btn.stop').exists()).toBe(false)
+
+    await send(wrapper, 'new request')
+    expect(streamChat).toHaveBeenCalledTimes(2)
+
+    oldCallbacks.onDelta({ content: 'late output' })
+    oldCallbacks.onSources({ sources: [{ filename: 'stale.pdf' }] })
+    oldCallbacks.onDone({ user_message_id: 1, assistant_message_id: 2, model: 'm' })
+    oldCallbacks.onError({ type: 'stream' })
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('late output')
+    expect(wrapper.text()).not.toContain('stale.pdf')
+    expect(wrapper.find('.error-banner').exists()).toBe(false)
+  })
+
+  it('ignores streaming callbacks after switching conversations', async () => {
+    listConversations.mockResolvedValue([
+      { id: 1, title: 'Conversation one' },
+      { id: 2, title: 'Conversation two' },
+    ])
+    listMessages.mockResolvedValue([])
+    let callbacks
+    streamChat.mockImplementation((handlers) => {
+      callbacks = handlers
+      return new Promise(() => {})
+    })
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    await send(wrapper, 'hello')
+    await wrapper.findAll('.conversation-item')[1].trigger('click')
+    await flushPromises()
+
+    callbacks.onDelta({ content: 'late delta' })
+    callbacks.onDone({ user_message_id: 1, assistant_message_id: 2, model: 'm' })
+    callbacks.onError({ type: 'stream' })
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('late delta')
+    expect(wrapper.find('.error-banner').exists()).toBe(false)
+    expect(listConversations).toHaveBeenCalledTimes(1)
+  })
+
+  it('aborts and ignores an old stream after switching from A to B and back to A', async () => {
+    const abortSpy = vi.fn()
+    vi.stubGlobal(
+      'AbortController',
+      class {
+        constructor() {
+          this.signal = {}
+          this.abort = abortSpy
+        }
+      },
+    )
+    listConversations.mockResolvedValue([
+      { id: 1, title: 'Conversation A' },
+      { id: 2, title: 'Conversation B' },
+    ])
+    listMessages.mockResolvedValue([])
+    let callbacks
+    streamChat.mockImplementation((handlers) => {
+      callbacks = handlers
+      return new Promise(() => {})
+    })
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    await send(wrapper, 'hello')
+    await wrapper.findAll('.conversation-item')[1].trigger('click')
+    await flushPromises()
+    await wrapper.findAll('.conversation-item')[0].trigger('click')
+    await flushPromises()
+
+    callbacks.onDelta({ content: 'stale A delta' })
+    callbacks.onDone({ user_message_id: 1, assistant_message_id: 2, model: 'm' })
+    callbacks.onError({ type: 'stream' })
+    await flushPromises()
+
+    expect(abortSpy).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).not.toContain('stale A delta')
+    expect(wrapper.find('.error-banner').exists()).toBe(false)
+  })
+
+  it('aborts and ignores streaming callbacks after unmount', async () => {
+    const abortSpy = vi.fn()
+    vi.stubGlobal(
+      'AbortController',
+      class {
+        constructor() {
+          this.signal = {}
+          this.abort = abortSpy
+        }
+      },
+    )
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    let callbacks
+    streamChat.mockImplementation((handlers) => {
+      callbacks = handlers
+      return new Promise(() => {})
+    })
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    await send(wrapper, 'hello')
+    wrapper.unmount()
+
+    callbacks.onDelta({ content: 'late delta' })
+    callbacks.onDone({ user_message_id: 1, assistant_message_id: 2, model: 'm' })
+    callbacks.onError({ type: 'stream' })
+    await flushPromises()
+
+    expect(abortSpy).toHaveBeenCalledTimes(1)
+    expect(listConversations).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores regeneration when the retry context belongs to a different conversation', async () => {
+    listConversations.mockResolvedValue([
+      { id: 1, title: 'Conversation one' },
+      { id: 2, title: 'Conversation two' },
+    ])
+    listMessages.mockImplementation(async (id) => (
+      id === 2 ? [{ id: 2, role: 'assistant', content: 'Completed response' }] : []
+    ))
+    streamChat.mockImplementation(async ({ onError }) => {
+      onError({ type: 'stream' })
+    })
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    await send(wrapper, 'failed request')
+    await wrapper.findAll('.conversation-item')[1].trigger('click')
+    await flushPromises()
+    await wrapper.find('.regenerate-btn').trigger('click')
+
+    expect(streamRegenerate).not.toHaveBeenCalled()
+  })
+
+  it('refreshes the conversation list and selects the next conversation after a 404 delete', async () => {
+    listConversations
+      .mockResolvedValueOnce([
+        { id: 1, title: 'Conversation one' },
+        { id: 2, title: 'Conversation two' },
+      ])
+      .mockResolvedValueOnce([{ id: 2, title: 'Conversation two' }])
+    listMessages.mockResolvedValue([])
+    deleteConversation.mockRejectedValue({ status: 404 })
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    await wrapper.find('.conversation-more').trigger('click')
+    await wrapper.findAll('.conversation-menu button')[1].trigger('click')
+    await wrapper.findAll('.confirm-actions button')[1].trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('.conversation-title')).toHaveLength(1)
+    expect(wrapper.find('.conversation-title').text()).toBe('Conversation two')
+    expect(wrapper.find('.conversation-item').attributes('aria-current')).toBe('true')
+    expect(listMessages).toHaveBeenCalledWith(2)
   })
 
   it('starts renaming with the original title in the input', async () => {
@@ -732,7 +980,7 @@ describe('ChatView', () => {
 
     expect(wrapper.find('.confirm-modal').exists()).toBe(true)
     expect(wrapper.find('.confirm-modal').text()).toContain('删除对话')
-    expect(wrapper.find('.confirm-modal').text()).toContain('删除后无法恢复')
+    expect(wrapper.find('.confirm-modal').text()).toContain('删除后，该对话及其消息将无法恢复。')
   })
 
   it('cancels deletion without making a request', async () => {
@@ -896,5 +1144,290 @@ describe('ChatView', () => {
     expect(streamRegenerate).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 1 }))
     expect(wrapper.findAll('.message.assistant')).toHaveLength(2)
     expect(wrapper.text()).toContain('new answer')
+  })
+})
+
+describe('ChatView conversation management contract', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.unstubAllGlobals()
+    authStore.user = { username: 'alice' }
+  })
+
+  it('shows a conversation-list loading state while the first request is pending', async () => {
+    const request = deferred()
+    listConversations.mockReturnValue(request.promise)
+
+    const wrapper = mount(ChatView)
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.skeleton-list').exists()).toBe(true)
+  })
+
+  it('shows “还没有对话” when the loaded conversation list is empty', async () => {
+    listConversations.mockResolvedValue([])
+
+    const wrapper = await mountChat()
+
+    expect(wrapper.find('.sidebar-hint').text()).toBe('还没有对话')
+  })
+
+  it('shows “会话加载失败” when the initial conversation request fails', async () => {
+    listConversations.mockRejectedValue(new Error('会话加载失败'))
+
+    const wrapper = await mountChat()
+
+    expect(wrapper.find('.sidebar-load-error').text()).toContain('会话加载失败')
+  })
+
+  it('retries loading conversations after a list failure', async () => {
+    listConversations
+      .mockRejectedValueOnce(new Error('会话加载失败'))
+      .mockResolvedValueOnce([{ id: 1, title: '重试后的会话' }])
+
+    const wrapper = await mountChat()
+    await wrapper.find('.sidebar-load-error button').trigger('click')
+    await flushPromises()
+
+    expect(listConversations).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('重试后的会话')
+  })
+
+  it('filters conversations locally by title when searching', async () => {
+    listConversations.mockResolvedValue([
+      { id: 1, title: '项目计划' },
+      { id: 2, title: '读书笔记' },
+    ])
+
+    const wrapper = await mountChat()
+    await wrapper.find('#conversation-search').setValue('项目')
+
+    expect(wrapper.text()).toContain('项目计划')
+    expect(wrapper.text()).not.toContain('读书笔记')
+    expect(listConversations).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows “没有找到相关对话” when a title search has no match', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: '项目计划' }])
+
+    const wrapper = await mountChat()
+    await wrapper.find('#conversation-search').setValue('不存在')
+
+    expect(wrapper.find('.sidebar-hint').text()).toBe('没有找到相关对话')
+  })
+
+  it('creates a conversation and makes it active', async () => {
+    listConversations.mockResolvedValue([])
+    createConversation.mockResolvedValue({ id: 7, title: '新对话' })
+
+    const wrapper = await mountChat()
+    await wrapper.find('.new-btn').trigger('click')
+    await flushPromises()
+
+    expect(createConversation).toHaveBeenCalledWith({ title: '新对话' })
+    expect(wrapper.find('.conversation-item').attributes('aria-current')).toBe('true')
+    expect(wrapper.find('.header-title').text()).toBe('新对话')
+  })
+
+  it('only creates one conversation for a rapid double click', async () => {
+    const request = deferred()
+    listConversations.mockResolvedValue([])
+    createConversation.mockReturnValue(request.promise)
+
+    const wrapper = await mountChat()
+    const createButton = wrapper.find('.new-btn')
+    await createButton.trigger('click')
+    await createButton.trigger('click')
+
+    expect(createConversation).toHaveBeenCalledTimes(1)
+
+    request.resolve({ id: 7, title: '新对话' })
+    await flushPromises()
+  })
+
+  it('restores the original title and reports a safe error when rename fails', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: '原标题' }])
+    updateConversation.mockRejectedValue(new Error('重命名会话失败'))
+
+    const wrapper = await mountChat()
+    await wrapper.find('.conversation-more').trigger('click')
+    await wrapper.find('.conversation-menu button').trigger('click')
+    const input = wrapper.find('.conversation-rename-input')
+    await input.setValue('失败的新标题')
+    await input.trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+
+    expect(wrapper.find('.conversation-title').text()).toBe('原标题')
+    expect(wrapper.find('.error-banner').text()).toContain('重命名会话失败')
+  })
+
+  it('saves a rename on blur', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: '原标题' }])
+    updateConversation.mockResolvedValue({ id: 1, title: '失焦后的标题' })
+
+    const wrapper = await mountChat()
+    await wrapper.find('.conversation-more').trigger('click')
+    await wrapper.find('.conversation-menu button').trigger('click')
+    const input = wrapper.find('.conversation-rename-input')
+    await input.setValue('失焦后的标题')
+    await input.trigger('blur')
+    await flushPromises()
+
+    expect(updateConversation).toHaveBeenCalledWith(1, { title: '失焦后的标题' })
+    expect(wrapper.find('.conversation-title').text()).toBe('失焦后的标题')
+  })
+
+  it('opens a delete modal with the irreversible-message warning', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: '对话一' }])
+
+    const wrapper = await mountChat()
+    await wrapper.find('.conversation-more').trigger('click')
+    await wrapper.findAll('.conversation-menu button')[1].trigger('click')
+
+    expect(wrapper.find('.confirm-modal').text()).toContain('删除后，该对话及其消息将无法恢复。')
+  })
+
+  it('removes the conversation from the list after a successful delete', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: '对话一' }])
+    deleteConversation.mockResolvedValue()
+
+    const wrapper = await mountChat()
+    await wrapper.find('.conversation-more').trigger('click')
+    await wrapper.findAll('.conversation-menu button')[1].trigger('click')
+    await wrapper.findAll('.confirm-actions button')[1].trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.conversation-row').exists()).toBe(false)
+  })
+
+  it('keeps the item and shows a safe error when deletion fails', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: '对话一' }])
+    deleteConversation.mockRejectedValue(new Error('删除会话失败'))
+
+    const wrapper = await mountChat()
+    await wrapper.find('.conversation-more').trigger('click')
+    await wrapper.findAll('.conversation-menu button')[1].trigger('click')
+    await wrapper.findAll('.confirm-actions button')[1].trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.conversation-title').text()).toBe('对话一')
+    expect(wrapper.find('.error-banner').text()).toContain('删除会话失败')
+  })
+
+  it('clears the active conversation when deleting the final conversation', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: '对话一' }])
+    listMessages.mockResolvedValue([])
+    deleteConversation.mockResolvedValue()
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    await wrapper.find('.conversation-more').trigger('click')
+    await wrapper.findAll('.conversation-menu button')[1].trigger('click')
+    await wrapper.findAll('.confirm-actions button')[1].trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.header-title').text()).toBe('新对话')
+    expect(wrapper.find('.composer-wrap').exists()).toBe(false)
+  })
+
+  it('renders conversations in descending updated_at order', async () => {
+    listConversations.mockResolvedValue([
+      { id: 1, title: '较早', updated_at: '2026-08-01T08:00:00Z' },
+      { id: 2, title: '最新', updated_at: '2026-08-29T08:00:00Z' },
+    ])
+
+    const wrapper = await mountChat()
+
+    expect(wrapper.findAll('.conversation-title').map((item) => item.text())).toEqual(['最新', '较早'])
+  })
+
+  it('breaks equal updated_at ties by descending id', async () => {
+    listConversations.mockResolvedValue([
+      { id: 1, title: 'Older id', updated_at: '2026-08-29T08:00:00Z' },
+      { id: 2, title: 'Newer id', updated_at: '2026-08-29T08:00:00Z' },
+    ])
+
+    const wrapper = await mountChat()
+
+    expect(wrapper.findAll('.conversation-title').map((item) => item.text())).toEqual([
+      'Newer id',
+      'Older id',
+    ])
+  })
+
+  it('refreshes and moves the active conversation to the top after a successful send', async () => {
+    listConversations
+      .mockResolvedValueOnce([
+        { id: 1, title: '当前对话', updated_at: '2026-08-01T08:00:00Z' },
+        { id: 2, title: '另一对话', updated_at: '2026-08-29T08:00:00Z' },
+      ])
+      .mockResolvedValueOnce([
+        { id: 1, title: '当前对话', updated_at: '2026-08-30T08:00:00Z' },
+        { id: 2, title: '另一对话', updated_at: '2026-08-29T08:00:00Z' },
+      ])
+    listMessages.mockResolvedValue([])
+    streamChat.mockImplementation(async ({ onDone }) => {
+      onDone({ user_message_id: 10, assistant_message_id: 11, model: 'm' })
+    })
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    await send(wrapper, '发送后置顶')
+
+    expect(listConversations).toHaveBeenCalledTimes(2)
+    expect(wrapper.findAll('.conversation-title')[0].text()).toBe('当前对话')
+  })
+
+  it('refreshes the automatic title after the first successful response', async () => {
+    listConversations
+      .mockResolvedValueOnce([{ id: 1, title: '新建对话' }])
+      .mockResolvedValueOnce([{ id: 1, title: '帮我规划周末行程' }])
+    listMessages.mockResolvedValue([])
+    streamChat.mockImplementation(async ({ onDone }) => {
+      onDone({ user_message_id: 10, assistant_message_id: 11, model: 'm' })
+    })
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    await send(wrapper, '帮我规划周末行程')
+
+    expect(wrapper.find('.conversation-title').text()).toBe('帮我规划周末行程')
+    expect(wrapper.find('.header-title').text()).toBe('帮我规划周末行程')
+  })
+
+  it('does not let an older list response overwrite a newer refresh', async () => {
+    const oldRefresh = deferred()
+    listConversations
+      .mockResolvedValueOnce([{ id: 1, title: '初始列表' }])
+      .mockReturnValueOnce(oldRefresh.promise)
+      .mockResolvedValueOnce([{ id: 2, title: '最新列表' }])
+    listMessages.mockResolvedValue([])
+    streamChat.mockImplementation(async ({ onDone }) => {
+      onDone({ user_message_id: 10, assistant_message_id: 11, model: 'm' })
+    })
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    await send(wrapper, '第一次发送')
+    await send(wrapper, '第二次发送')
+    oldRefresh.resolve([{ id: 1, title: '过期列表' }])
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('最新列表')
+    expect(wrapper.text()).not.toContain('过期列表')
+  })
+
+  it('allows creating a conversation from the mobile drawer', async () => {
+    listConversations.mockResolvedValue([])
+    createConversation.mockResolvedValue({ id: 7, title: '移动端对话' })
+
+    const wrapper = await mountChat()
+    await wrapper.find('.menu-btn').trigger('click')
+    await wrapper.find('.sidebar.open .new-btn').trigger('click')
+    await flushPromises()
+
+    expect(createConversation).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('.sidebar').classes()).not.toContain('open')
+    expect(wrapper.find('.header-title').text()).toBe('移动端对话')
   })
 })
