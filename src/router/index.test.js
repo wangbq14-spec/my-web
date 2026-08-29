@@ -30,4 +30,12 @@ describe('router authentication guard', () => {
 
     expect(router.currentRoute.value.name).toBe('login')
   })
+
+  it('redirects an unauthenticated user from /knowledge to /login', async () => {
+    authStore.isAuthenticated = false
+
+    await router.push('/knowledge')
+
+    expect(router.currentRoute.value.name).toBe('login')
+  })
 })

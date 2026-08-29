@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   requestFulfilled: null,
+  createConfig: null,
 }))
 
 vi.mock('axios', () => {
@@ -19,7 +20,10 @@ vi.mock('axios', () => {
   }
   return {
     default: {
-      create: () => instance,
+      create: (config) => {
+        mocks.createConfig = config
+        return instance
+      },
     },
   }
 })
@@ -49,5 +53,9 @@ describe('http client', () => {
 
   it('导出默认 http 实例', () => {
     expect(http).toBeTruthy()
+  })
+
+  it('does not set a default JSON Content-Type', () => {
+    expect(mocks.createConfig.headers?.['Content-Type']).toBeUndefined()
   })
 })

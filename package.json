@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "test": "vitest run",
-    "test:e2e": "playwright test tests/home.spec.js",
+    "test:e2e": "playwright test",
     "quality": "npm run test && npm run lint && npm run build && npm run test:e2e"
   },
   "dependencies": {

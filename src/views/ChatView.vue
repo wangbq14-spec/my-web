@@ -609,6 +609,14 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="sidebar-footer">
+        <button
+          type="button"
+          class="knowledge-nav-btn"
+          aria-label="知识库"
+          @click="router.push('/knowledge')"
+        >
+          知识库
+        </button>
         <div class="footer-user">
           <span class="footer-dot" />
           <span class="footer-username">{{ authStore.user?.username || '已登录' }}</span>
@@ -1115,6 +1123,24 @@ onBeforeUnmount(() => {
   border-top: 1px solid var(--border);
   color: var(--text-secondary);
   font-size: 13px;
+}
+
+.knowledge-nav-btn {
+  flex-shrink: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.knowledge-nav-btn:hover,
+.knowledge-nav-btn:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text-primary);
 }
 
 .footer-user {

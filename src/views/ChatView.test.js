@@ -8,6 +8,7 @@ const authStore = vi.hoisted(() => ({
 }))
 const routerMock = vi.hoisted(() => ({
   replace: vi.fn(),
+  push: vi.fn(),
 }))
 
 vi.mock('../api/modules/conversation', () => ({
@@ -89,6 +90,26 @@ describe('ChatView', () => {
     const wrapper = await mountChat()
 
     expect(wrapper.find('.sidebar').find('.logout-btn').exists()).toBe(true)
+  })
+
+  it('sidebar 显示知识库入口且点击跳转知识库', async () => {
+    listConversations.mockResolvedValue([])
+    const wrapper = await mountChat()
+
+    const knowledgeButton = wrapper.find('.sidebar .knowledge-nav-btn')
+    expect(knowledgeButton.text()).toBe('知识库')
+    await knowledgeButton.trigger('click')
+
+    expect(routerMock.push).toHaveBeenCalledWith('/knowledge')
+  })
+
+  it('移动端抽屉 sidebar 内同样显示知识库入口', async () => {
+    listConversations.mockResolvedValue([])
+    const wrapper = await mountChat()
+    await wrapper.find('.menu-btn').trigger('click')
+
+    expect(wrapper.find('.sidebar').classes()).toContain('open')
+    expect(wrapper.find('.sidebar .knowledge-nav-btn').exists()).toBe(true)
   })
 
   it('加载 conversation list', async () => {
