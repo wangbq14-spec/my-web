@@ -1,7 +1,7 @@
 <script setup>
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { deleteDocument, listDocuments, uploadDocument } from '../api/modules/document'
+import { deleteDocument, getDocument, listDocuments, retryDocument, uploadDocument } from '../api/modules/document'
 
 const ALLOWED_EXTENSIONS = ['.txt', '.md', '.pdf']
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -22,9 +22,15 @@ const cancelDeleteButton = ref(null)
 const deleteTriggerRef = ref(null)
 const backButton = ref(null)
 const dragging = ref(false)
+const retrying = ref(new Set())
+const pollingTimedOut = ref(new Set())
 
 let listRequestSeq = 0
 let isMounted = true
+const documentVersions = new Map()
+const pollStates = new Map()
+const MAX_POLL_ATTEMPTS = 15
+const POLL_INTERVAL_MS = 2000
 
 function isSupportedFile(file) {
   const filename = file?.name?.toLowerCase() || ''
@@ -57,10 +63,135 @@ function formatDate(value) {
 }
 
 function statusText(status) {
+  if (status === 'queued') return '排队中…'
   if (status === 'processing') return '处理中…'
   if (status === 'ready') return '可用'
   if (status === 'failed') return '处理失败'
   return '状态未知'
+}
+
+function documentVersion(id) {
+  return documentVersions.get(id) ?? 0
+}
+
+function updateDocument(updatedDocument) {
+  const index = documents.value.findIndex((document) => document.id === updatedDocument.id)
+  if (index === -1) {
+    documents.value = [updatedDocument, ...documents.value]
+  } else {
+    documents.value = documents.value.map((document, itemIndex) => (itemIndex === index ? updatedDocument : document))
+  }
+  documentVersions.set(updatedDocument.id, documentVersion(updatedDocument.id) + 1)
+  if (isTerminalStatus(updatedDocument.status)) setPollingTimedOut(updatedDocument.id, false)
+}
+
+function removeDocument(id) {
+  documents.value = documents.value.filter((document) => document.id !== id)
+  documentVersions.set(id, documentVersion(id) + 1)
+}
+
+function isTerminalStatus(status) {
+  return ['ready', 'failed', 'deleted'].includes(status)
+}
+
+function setPollingTimedOut(id, timedOut) {
+  const next = new Set(pollingTimedOut.value)
+  if (timedOut) next.add(id)
+  else next.delete(id)
+  pollingTimedOut.value = next
+}
+
+function isPollingTimedOut(id) {
+  return pollingTimedOut.value.has(id)
+}
+
+function applyDocumentList(nextDocuments) {
+  const affectedIds = new Set([
+    ...documents.value.map((document) => document.id),
+    ...nextDocuments.map((document) => document.id),
+  ])
+  affectedIds.forEach((id) => {
+    documentVersions.set(id, documentVersion(id) + 1)
+  })
+  documents.value = nextDocuments
+
+  const nextById = new Map(nextDocuments.map((document) => [document.id, document]))
+  pollStates.forEach((_, id) => {
+    const document = nextById.get(id)
+    if (!document || isTerminalStatus(document.status)) stopDocumentPolling(id)
+  })
+  nextDocuments.forEach((document) => {
+    if (!isTerminalStatus(document.status)) startDocumentPolling(document.id)
+  })
+}
+
+function stopDocumentPolling(id) {
+  const state = pollStates.get(id)
+  if (!state) return
+
+  if (state.timer) clearTimeout(state.timer)
+  state.controller?.abort()
+  state.requestSeq += 1
+  pollStates.delete(id)
+}
+
+function scheduleDocumentPoll(id, state) {
+  if (!isMounted || pollStates.get(id) !== state) return
+  if (state.attempts >= MAX_POLL_ATTEMPTS) {
+    const document = documents.value.find((item) => item.id === id)
+    if (document && !isTerminalStatus(document.status)) setPollingTimedOut(id, true)
+    stopDocumentPolling(id)
+    return
+  }
+
+  state.timer = setTimeout(() => {
+    state.timer = null
+    pollDocument(id, state)
+  }, POLL_INTERVAL_MS)
+}
+
+async function pollDocument(id, state) {
+  if (!isMounted || pollStates.get(id) !== state) return
+
+  const version = documentVersion(id)
+  const requestSeq = ++state.requestSeq
+  state.attempts += 1
+  state.controller = new AbortController()
+
+  try {
+    const updatedDocument = await getDocument(id, { signal: state.controller.signal })
+    if (
+      !isMounted ||
+      pollStates.get(id) !== state ||
+      state.requestSeq !== requestSeq ||
+      documentVersion(id) !== version
+    ) return
+
+    state.controller = null
+    updateDocument(updatedDocument)
+    if (isTerminalStatus(updatedDocument.status)) {
+      stopDocumentPolling(id)
+    } else {
+      scheduleDocumentPoll(id, state)
+    }
+  } catch {
+    if (!isMounted || pollStates.get(id) !== state || state.requestSeq !== requestSeq) return
+    state.controller = null
+    scheduleDocumentPoll(id, state)
+  }
+}
+
+function startDocumentPolling(id) {
+  if (!id || pollStates.has(id) || !isMounted) return
+
+  setPollingTimedOut(id, false)
+  const state = { attempts: 0, controller: null, requestSeq: 0, timer: null }
+  pollStates.set(id, state)
+  pollDocument(id, state)
+}
+
+function isRetrying(id) {
+  return retrying.value.has(id)
 }
 
 function failedDocumentMessage(document) {
@@ -77,7 +208,7 @@ async function loadDocuments() {
   try {
     const result = await listDocuments()
     if (isMounted && seq === listRequestSeq) {
-      documents.value = result
+      applyDocumentList(result)
       loadError.value = ''
     }
   } catch (error) {
@@ -136,15 +267,56 @@ async function handleUpload() {
   uploading.value = true
   errorMessage.value = ''
   try {
-    await uploadDocument(file)
+    const uploadedDocument = await uploadDocument(file)
     if (!isMounted) return
     selectedFile.value = null
-    await loadDocuments()
+    if (!uploadedDocument?.id) {
+      await loadDocuments()
+      return
+    }
+
+    updateDocument(uploadedDocument)
+    try {
+      await loadDocuments()
+    } finally {
+      if (isMounted) {
+        const latestDocument = documents.value.find((document) => document.id === uploadedDocument.id)
+        const documentToPoll = latestDocument ?? uploadedDocument
+        if (!latestDocument) updateDocument(uploadedDocument)
+        if (!isTerminalStatus(documentToPoll.status)) startDocumentPolling(uploadedDocument.id)
+      }
+    }
   } catch (error) {
     if (isMounted) errorMessage.value = safeErrorMessage(error, '上传失败，请稍后重试')
   } finally {
     if (fileInput.value) fileInput.value.value = ''
     if (isMounted) uploading.value = false
+  }
+}
+
+async function handleRetry(document) {
+  if (!document || isRetrying(document.id)) return
+
+  retrying.value = new Set(retrying.value).add(document.id)
+  errorMessage.value = ''
+  try {
+    const retriedDocument = await retryDocument(document.id)
+    if (!isMounted) return
+
+    const queuedDocument = retriedDocument?.id
+      ? retriedDocument
+      : { ...document, status: 'queued', error_message: null }
+    updateDocument(queuedDocument)
+    stopDocumentPolling(document.id)
+    if (queuedDocument.status === 'queued') startDocumentPolling(document.id)
+  } catch (error) {
+    if (isMounted) errorMessage.value = safeErrorMessage(error, '重试处理失败，请稍后再试')
+  } finally {
+    if (isMounted) {
+      const retryingDocuments = new Set(retrying.value)
+      retryingDocuments.delete(document.id)
+      retrying.value = retryingDocuments
+    }
   }
 }
 
@@ -181,7 +353,8 @@ async function confirmDelete() {
   try {
     await deleteDocument(document.id)
     if (!isMounted) return
-    documents.value = documents.value.filter((item) => item.id !== document.id)
+    stopDocumentPolling(document.id)
+    removeDocument(document.id)
     documentToDelete.value = null
     restoreDeleteTriggerFocus()
     await loadDocuments()
@@ -211,6 +384,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   isMounted = false
   listRequestSeq += 1
+  pollStates.forEach((_, id) => stopDocumentPolling(id))
   document.removeEventListener('keydown', onDocumentKeydown)
 })
 </script>
@@ -352,12 +526,27 @@ onBeforeUnmount(() => {
               <span>{{ formatFileSize(document.file_size) }} · {{ formatDate(document.created_at) }}</span>
               <span class="document-status">{{ statusText(document.status) }}</span>
               <p
+                v-if="['queued', 'processing'].includes(document.status) && isPollingTimedOut(document.id)"
+                class="document-processing-hint"
+              >
+                仍在处理中，可刷新查看最新状态
+              </p>
+              <p
                 v-if="document.status === 'failed'"
                 class="document-error"
               >
                 {{ failedDocumentMessage(document) }}
               </p>
             </div>
+            <button
+              v-if="document.status === 'failed'"
+              type="button"
+              class="retry-btn"
+              :disabled="isRetrying(document.id)"
+              @click="handleRetry(document)"
+            >
+              {{ isRetrying(document.id) ? '重试中…' : 'Retry' }}
+            </button>
             <button
               type="button"
               class="delete-btn"
@@ -475,6 +664,7 @@ h1 {
 .upload-area label,
 .upload-btn,
 .empty-upload-btn,
+.retry-btn,
 .delete-btn,
 .confirm-actions button,
 .load-error-state button,
@@ -488,6 +678,7 @@ h1 {
 }
 
 .back-btn,
+.retry-btn,
 .delete-btn,
 .confirm-actions button,
 .load-error-state button,
@@ -499,6 +690,8 @@ h1 {
 .back-btn:focus-visible,
 .empty-upload-btn:hover:not(:disabled),
 .empty-upload-btn:focus-visible:not(:disabled),
+.retry-btn:hover:not(:disabled),
+.retry-btn:focus-visible:not(:disabled),
 .delete-btn:hover:not(:disabled),
 .delete-btn:focus-visible:not(:disabled),
 .confirm-actions button:hover:not(:disabled),
@@ -674,9 +867,19 @@ h2 {
   font-size: 13px;
 }
 
+.document-processing-hint {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
 .delete-btn {
   flex-shrink: 0;
   color: var(--danger);
+}
+
+.retry-btn {
+  flex-shrink: 0;
+  color: var(--accent);
 }
 
 .confirm-modal-backdrop {

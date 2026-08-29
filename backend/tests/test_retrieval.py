@@ -1,7 +1,11 @@
 import pytest
 
-from app.rag import processing, retrieval
+from app.api.routes import documents
+from app.models.document import Document
+from app.rag import retrieval
+from app.rag.vector_store.base import ChunkVector
 from app.rag.vector_store.local import LocalVectorStore
+from app.services.document_tasks import FakeDocumentTaskDispatcher
 
 
 class FakeEmbeddingProvider:
@@ -25,11 +29,16 @@ class FakeEmbeddingProvider:
 def fake_rag(monkeypatch):
     provider = FakeEmbeddingProvider()
     store = LocalVectorStore()
-    monkeypatch.setattr(processing, "get_embedding_provider", lambda: provider)
-    monkeypatch.setattr(processing, "get_vector_store", lambda: store)
     monkeypatch.setattr(retrieval, "get_embedding_provider", lambda: provider)
     monkeypatch.setattr(retrieval, "get_vector_store", lambda: store)
     return store
+
+
+@pytest.fixture(autouse=True)
+def fake_document_dispatcher(monkeypatch):
+    dispatcher = FakeDocumentTaskDispatcher()
+    monkeypatch.setattr(documents, "get_document_task_dispatcher", lambda: dispatcher)
+    return dispatcher
 
 
 def _register_and_login(client, username: str) -> str:
@@ -58,9 +67,25 @@ def _upload(client, token: str, filename: str, content: bytes):
     )
 
 
-def test_retrieval_returns_document_metadata_and_content(client, fake_rag):
+def _index_ready_document(db, store, document: Document, content: str) -> None:
+    """Set up a completed document for retrieval-only tests without a sync worker path."""
+    document.status = "ready"
+    document.processing_generation = 1
+    document.active_generation = 1
+    store.upsert_chunks(
+        document.user_id,
+        document.id,
+        1,
+        [ChunkVector(chunk_index=0, content=content, embedding=FakeEmbeddingProvider._vector(content))],
+    )
+    db.commit()
+
+
+def test_retrieval_returns_document_metadata_and_content(client, db, fake_rag):
     token = _register_and_login(client, "alice")
     created = _upload(client, token, "display-name.txt", b"alpha content").json()
+    document = db.get(Document, created["id"])
+    _index_ready_document(db, fake_rag, document, "alpha content")
 
     response = client.post(
         "/api/retrieval/search", json={"query": "alpha"}, headers=_auth(token)
@@ -78,10 +103,13 @@ def test_retrieval_returns_document_metadata_and_content(client, fake_rag):
     ]
 
 
-def test_retrieval_top_k_limits_results(client, fake_rag):
+def test_retrieval_top_k_limits_results(client, db, fake_rag):
     token = _register_and_login(client, "alice")
-    _upload(client, token, "alpha.txt", b"alpha")
-    _upload(client, token, "beta.txt", b"beta")
+    alpha = _upload(client, token, "alpha.txt", b"alpha").json()
+    beta = _upload(client, token, "beta.txt", b"beta").json()
+    for document_id in [alpha["id"], beta["id"]]:
+        document = db.get(Document, document_id)
+        _index_ready_document(db, fake_rag, document, document.original_filename.removesuffix(".txt"))
 
     response = client.post(
         "/api/retrieval/search",

@@ -4,6 +4,7 @@ import {
   deleteDocument,
   getDocument,
   listDocuments,
+  retryDocument,
   uploadDocument,
 } from './document'
 
@@ -44,6 +45,12 @@ describe('document API', () => {
     getDocument(7)
 
     expect(http.get).toHaveBeenCalledWith('/documents/7')
+  })
+
+  it('retryDocument calls the document retry endpoint', () => {
+    retryDocument(7)
+
+    expect(http.post).toHaveBeenCalledWith('/documents/7/retry')
   })
 
   it('deleteDocument calls the document endpoint', () => {

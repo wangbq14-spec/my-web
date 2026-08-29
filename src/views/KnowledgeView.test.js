@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import KnowledgeView from './KnowledgeView.vue'
 
 const routerMock = vi.hoisted(() => ({ push: vi.fn() }))
@@ -8,12 +8,14 @@ vi.mock('../api/modules/document', () => ({
   listDocuments: vi.fn(),
   uploadDocument: vi.fn(),
   deleteDocument: vi.fn(),
+  getDocument: vi.fn(),
+  retryDocument: vi.fn(),
 }))
 vi.mock('vue-router', () => ({
   useRouter: () => routerMock,
 }))
 
-import { deleteDocument, listDocuments, uploadDocument } from '../api/modules/document'
+import { deleteDocument, getDocument, listDocuments, retryDocument, uploadDocument } from '../api/modules/document'
 
 const readyDocument = {
   id: 1,
@@ -23,6 +25,8 @@ const readyDocument = {
   error_message: null,
   created_at: '2026-08-29T08:30:00Z',
 }
+
+const queuedDocument = { ...readyDocument, status: 'queued' }
 
 function deferred() {
   let resolve
@@ -52,7 +56,12 @@ async function selectFile(wrapper, file) {
 describe('KnowledgeView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.useRealTimers()
     listDocuments.mockResolvedValue([])
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
   it('shows a loading state while documents are loading', () => {
@@ -82,6 +91,26 @@ describe('KnowledgeView', () => {
     const wrapper = await mountKnowledge()
 
     expect(wrapper.text()).toContain('处理中…')
+  })
+
+  it('renders a queued document with text status', async () => {
+    listDocuments.mockResolvedValue([queuedDocument])
+    const wrapper = await mountKnowledge()
+
+    expect(wrapper.text()).toContain('排队中…')
+  })
+
+  it('starts polling queued and processing documents restored from the list', async () => {
+    vi.useFakeTimers()
+    const processingDocument = { ...readyDocument, id: 2, status: 'processing' }
+    listDocuments.mockResolvedValue([queuedDocument, processingDocument])
+    getDocument.mockResolvedValue(readyDocument)
+
+    const wrapper = await mountKnowledge()
+
+    expect(getDocument).toHaveBeenCalledWith(1, expect.any(Object))
+    expect(getDocument).toHaveBeenCalledWith(2, expect.any(Object))
+    wrapper.unmount()
   })
 
   it('shows safe failed-document recovery guidance', async () => {
@@ -190,6 +219,151 @@ describe('KnowledgeView', () => {
     expect(listDocuments).toHaveBeenCalledTimes(2)
     expect(wrapper.text()).toContain('handbook.pdf')
     expect(wrapper.find('input[type="file"]').element.value).toBe('')
+  })
+
+  it('polls an uploaded queued document until it is ready', async () => {
+    vi.useFakeTimers()
+    uploadDocument.mockResolvedValue(queuedDocument)
+    getDocument.mockResolvedValueOnce({ ...queuedDocument, status: 'processing' }).mockResolvedValueOnce(readyDocument)
+    const wrapper = await mountKnowledge()
+
+    await selectFile(wrapper, new File(['hello'], 'notes.txt', { type: 'text/plain' }))
+    await wrapper.find('.upload-btn').trigger('click')
+    await flushPromises()
+    expect(getDocument).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('处理中…')
+
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(getDocument).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('可用')
+
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(getDocument).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('shows a refresh hint after the finite polling window ends while a document is non-terminal', async () => {
+    vi.useFakeTimers()
+    listDocuments.mockResolvedValue([queuedDocument])
+    getDocument.mockResolvedValue(queuedDocument)
+    const wrapper = await mountKnowledge()
+
+    await vi.advanceTimersByTimeAsync(30000)
+
+    expect(getDocument).toHaveBeenCalledTimes(15)
+    expect(wrapper.text()).toContain('仍在处理中，可刷新查看最新状态')
+    wrapper.unmount()
+  })
+
+  it('restarts polling and clears the refresh hint when the document list is refreshed', async () => {
+    vi.useFakeTimers()
+    listDocuments.mockResolvedValue([queuedDocument])
+    getDocument.mockResolvedValue(queuedDocument)
+    const wrapper = await mountKnowledge()
+
+    await vi.advanceTimersByTimeAsync(30000)
+    expect(wrapper.text()).toContain('仍在处理中，可刷新查看最新状态')
+
+    await wrapper.vm.$.setupState.loadDocuments()
+
+    expect(getDocument).toHaveBeenCalledTimes(16)
+    expect(wrapper.text()).not.toContain('仍在处理中，可刷新查看最新状态')
+    wrapper.unmount()
+  })
+
+  it('stops polling on failure and shows Retry', async () => {
+    vi.useFakeTimers()
+    uploadDocument.mockResolvedValue(queuedDocument)
+    getDocument.mockResolvedValue({ ...queuedDocument, status: 'failed', error_message: null })
+    const wrapper = await mountKnowledge()
+
+    await selectFile(wrapper, new File(['hello'], 'notes.txt', { type: 'text/plain' }))
+    await wrapper.find('.upload-btn').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.retry-btn').text()).toBe('Retry')
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(getDocument).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('requeues a failed document and resumes polling after Retry', async () => {
+    vi.useFakeTimers()
+    listDocuments.mockResolvedValue([{ ...queuedDocument, status: 'failed' }])
+    const pendingPoll = deferred()
+    retryDocument.mockResolvedValue(queuedDocument)
+    getDocument.mockImplementationOnce(() => pendingPoll.promise).mockResolvedValueOnce(readyDocument)
+    const wrapper = await mountKnowledge()
+
+    await wrapper.find('.retry-btn').trigger('click')
+    await flushPromises()
+    expect(retryDocument).toHaveBeenCalledWith(1)
+    expect(wrapper.text()).toContain('排队中…')
+    expect(getDocument).toHaveBeenCalledTimes(1)
+
+    pendingPoll.resolve({ ...queuedDocument, status: 'processing' })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(getDocument).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('does not update a queued document after unmounting during polling', async () => {
+    vi.useFakeTimers()
+    const pendingPoll = deferred()
+    uploadDocument.mockResolvedValue(queuedDocument)
+    getDocument.mockImplementation(() => pendingPoll.promise)
+    const wrapper = await mountKnowledge()
+
+    await selectFile(wrapper, new File(['hello'], 'notes.txt', { type: 'text/plain' }))
+    await wrapper.find('.upload-btn').trigger('click')
+    await flushPromises()
+    wrapper.unmount()
+    pendingPoll.resolve(readyDocument)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(4000)
+
+    expect(getDocument).toHaveBeenCalledTimes(1)
+    expect(wrapper.vm.$.setupState.documents).toEqual([queuedDocument])
+  })
+
+  it('does not let a stale polling response restore a deleted document', async () => {
+    vi.useFakeTimers()
+    const pendingPoll = deferred()
+    listDocuments.mockResolvedValueOnce([]).mockResolvedValueOnce([queuedDocument]).mockResolvedValueOnce([])
+    uploadDocument.mockResolvedValue(queuedDocument)
+    getDocument.mockImplementation(() => pendingPoll.promise)
+    deleteDocument.mockResolvedValue()
+    const wrapper = await mountKnowledge()
+
+    await selectFile(wrapper, new File(['hello'], 'notes.txt', { type: 'text/plain' }))
+    await wrapper.find('.upload-btn').trigger('click')
+    await flushPromises()
+    await wrapper.find('.delete-btn').trigger('click')
+    await wrapper.find('.confirm-actions .danger').trigger('click')
+    await flushPromises()
+    pendingPoll.resolve(readyDocument)
+    await flushPromises()
+
+    expect(wrapper.find('.document-list').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('handbook.pdf')
+    wrapper.unmount()
+  })
+
+  it('does not let an older polling response overwrite a refreshed document list', async () => {
+    vi.useFakeTimers()
+    const pendingPoll = deferred()
+    listDocuments.mockResolvedValueOnce([queuedDocument]).mockResolvedValueOnce([readyDocument])
+    getDocument.mockImplementationOnce(() => pendingPoll.promise)
+    const wrapper = await mountKnowledge()
+
+    await wrapper.vm.$.setupState.loadDocuments()
+    pendingPoll.resolve({ ...queuedDocument, status: 'processing' })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('可用')
+    expect(wrapper.text()).not.toContain('处理中…')
+    wrapper.unmount()
   })
 
   it('resets the native input after an upload failure so the same file can be selected again', async () => {

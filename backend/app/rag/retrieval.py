@@ -28,7 +28,9 @@ def retrieve(
 
     documents = session.execute(
         select(Document.id, Document.original_filename).where(
-            Document.id.in_(document_ids), Document.user_id == user_id
+            Document.id.in_(document_ids),
+            Document.user_id == user_id,
+            Document.deleted_at.is_(None),
         )
     ).all()
     filenames = {document_id: filename for document_id, filename in documents}

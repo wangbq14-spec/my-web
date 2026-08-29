@@ -25,7 +25,19 @@ class Document(Base):
     original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
     content_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
     file_size: Mapped[int] = mapped_column(Integer, nullable=False)
-    status: Mapped[str] = mapped_column(String(20), default="uploaded", nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="queued", nullable=False)
+    processing_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    processing_generation: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    active_generation: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    processing_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    processing_lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow_naive, nullable=False
@@ -40,9 +52,11 @@ class DocumentChunk(Base):
     __table_args__ = (
         Index("ix_document_chunks_document_id", "document_id"),
         Index(
-            "ix_document_chunks_document_chunk_index",
+            "uq_document_chunks_document_generation_index",
             "document_id",
+            "generation",
             "chunk_index",
+            unique=True,
         ),
         {
             "mysql_engine": "InnoDB",
@@ -57,8 +71,10 @@ class DocumentChunk(Base):
         nullable=False,
     )
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     char_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow_naive, nullable=False
     )

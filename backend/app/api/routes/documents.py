@@ -1,24 +1,25 @@
+import json
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
-import logging
 
-logger = logging.getLogger(__name__)
 from app.api.routes.auth import get_current_user
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.document import Document
 from app.models.user import User
-from app.rag import processing
-from app.rag.embeddings.base import EmbeddingError
-from app.rag.processing import process_document
-from app.rag.parsers.base import ParserError
 from app.rag.storage import StorageSecurityError, delete_upload, save_upload
 from app.schemas.document import DocumentOut
 from app.services import document as document_service
+from app.services.document_tasks import (
+    get_document_task_dispatcher,
+    mark_document_task_dispatched,
+)
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _ALLOWED_SUFFIXES = {".txt", ".md", ".pdf"}
@@ -30,19 +31,27 @@ _CONTENT_TYPES = {
 _READ_CHUNK_BYTES = 64 * 1024
 
 
+def _log_document_route_event(
+    *, event: str, document_id: int | None = None, error_code: str
+) -> None:
+    """Log only diagnostic identifiers that are safe for production logs."""
+    logger.info(
+        json.dumps(
+            {
+                "event": event,
+                "service": "documents-api",
+                "document_id": document_id,
+                "error_code": error_code,
+            }
+        )
+    )
+
+
 def _not_found() -> HTTPException:
-    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
+    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="\u6587\u6863\u4e0d\u5b58\u5728")
 
 
-def _processing_error_message(error: Exception) -> str:
-    if isinstance(error, ParserError):
-        return "文档解析失败"
-    if isinstance(error, EmbeddingError):
-        return "Embedding 服务不可用"
-    return "文档处理失败"
-
-
-@router.post("", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=DocumentOut, status_code=status.HTTP_202_ACCEPTED)
 def upload_document(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -53,7 +62,7 @@ def upload_document(
     if suffix not in _ALLOWED_SUFFIXES:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="不支持的文件类型",
+            detail="\u4e0d\u652f\u6301\u7684\u6587\u4ef6\u7c7b\u578b",
         )
 
     parts: list[bytes] = []
@@ -63,21 +72,20 @@ def upload_document(
         if file_size > settings.RAG_MAX_UPLOAD_BYTES:
             raise HTTPException(
                 status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                detail="文件过大",
+                detail="\u6587\u4ef6\u8fc7\u5927",
             )
         parts.append(content)
 
     if file_size == 0:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="文件为空"
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="\u6587\u4ef6\u4e3a\u7a7a"
         )
 
-    content = b"".join(parts)
     try:
-        filename = save_upload(content, suffix)
+        filename = save_upload(b"".join(parts), suffix)
     except OSError as exc:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="文件保存失败"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="\u6587\u4ef6\u4fdd\u5b58\u5931\u8d25"
         ) from exc
 
     try:
@@ -91,46 +99,39 @@ def upload_document(
         )
         db.commit()
     except SQLAlchemyError as exc:
-        logger.exception("Document 写入 MySQL 失败，filename=%s", filename)
+        _log_document_route_event(
+            event="document_database_write", error_code="database_write_failed"
+        )
         db.rollback()
         try:
             delete_upload(filename)
         except (OSError, StorageSecurityError):
             pass
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="文档保存失败"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="\u6587\u6863\u4fdd\u5b58\u5931\u8d25",
         ) from exc
 
-    document_id = document.id
     try:
-        process_document(db, current_user.id, document)
-        db.commit()
-    except Exception as exc:
-        db.rollback()
-        # The vector store is in-memory and deletion is idempotent. This also
-        # compensates for a DB commit failure after a successful upsert.
-        try:
-            processing.get_vector_store().delete_document(current_user.id, document_id)
-        except Exception:
-            pass
-        failed_document = document_service.get_document(
-            db, user_id=current_user.id, document_id=document_id
+        get_document_task_dispatcher().enqueue(document.id)
+    except Exception:
+        # The persisted queued document is the durable source for dispatcher scans.
+        _log_document_route_event(
+            event="document_task_enqueue",
+            document_id=document.id,
+            error_code="task_enqueue_failed",
         )
-        if failed_document is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="文档处理失败"
-            ) from exc
-        failed_document.status = "failed"
-        failed_document.error_message = _processing_error_message(exc)
+    else:
         try:
+            mark_document_task_dispatched(db, document.id)
             db.commit()
-        except SQLAlchemyError as commit_error:
+            db.refresh(document)
+        except SQLAlchemyError as exc:
             db.rollback()
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="文档处理失败"
-            ) from commit_error
-        return failed_document
-
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Document processing could not be accepted.",
+            ) from exc
     return document
 
 
@@ -156,31 +157,110 @@ def get_user_document(
     return document
 
 
+@router.post(
+    "/{document_id}/retry",
+    response_model=DocumentOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def retry_user_document(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Document:
+    document = document_service.get_document(
+        db, user_id=current_user.id, document_id=document_id
+    )
+    if document is None:
+        raise _not_found()
+    if not document_service.reset_for_manual_retry(db, document_id, current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only failed documents can be retried.",
+        )
+
+    try:
+        db.commit()
+        db.refresh(document)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Document retry could not be accepted.",
+        ) from exc
+
+    try:
+        get_document_task_dispatcher().enqueue(document_id)
+    except Exception:
+        # Keep the durable queued state so a dispatcher scan can re-submit it.
+        _log_document_route_event(
+            event="document_retry_enqueue",
+            document_id=document_id,
+            error_code="retry_enqueue_failed",
+        )
+    else:
+        try:
+            mark_document_task_dispatched(db, document_id)
+            db.commit()
+            db.refresh(document)
+        except SQLAlchemyError as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Document retry could not be accepted.",
+            ) from exc
+    return document
+
+
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_user_document(
     document_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Response:
+    document = document_service.get_document(
+        db, user_id=current_user.id, document_id=document_id
+    )
+    if document is None:
+        raise _not_found()
+
     try:
-        document = document_service.delete_document(
-            db, user_id=current_user.id, document_id=document_id
-        )
-        if document is None:
+        if not document_service.soft_delete_document(db, document_id, current_user.id):
             raise _not_found()
-        delete_upload(document.filename)
-        processing.get_vector_store().delete_document(current_user.id, document_id)
-        db.commit()
-    except HTTPException:
-        raise
-    except (OSError, StorageSecurityError) as exc:
+        document_service.delete_document_chunks(db, document_id=document_id)
+        db.flush()
+    except SQLAlchemyError as exc:
         db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="文件删除失败"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="\u6587\u6863\u5220\u9664\u5931\u8d25",
         ) from exc
-    except (SQLAlchemyError, Exception) as exc:
+
+    try:
+        delete_upload(document.filename)
+    except (OSError, StorageSecurityError) as exc:
+        # The soft delete and chunk removal are still uncommitted, so this
+        # rollback restores both before reporting the file-system failure.
+        db.rollback()
+        _log_document_route_event(
+            event="document_file_delete",
+            document_id=document_id,
+            error_code="file_delete_failed",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="删除失败，请重试",
+        ) from exc
+
+    try:
+        db.commit()
+    except SQLAlchemyError as exc:
+        # The database and file system are not atomic. If the file deletion
+        # succeeds but this commit fails, rollback retains the document and
+        # chunks (including ready/searchable documents). Retrying DELETE
+        # completes the deletion because delete_upload is idempotent.
         db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="文档删除失败"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="文档删除失败",
         ) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)

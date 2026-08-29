@@ -13,8 +13,13 @@ class LocalVectorStore(VectorStore):
         self._documents: dict[tuple[int, int], list[ChunkVector]] = {}
 
     def upsert_chunks(
-        self, user_id: int, document_id: int, chunks: list[ChunkVector]
+        self,
+        user_id: int,
+        document_id: int,
+        generation: int,
+        chunks: list[ChunkVector],
     ) -> None:
+        del generation
         self._documents[(user_id, document_id)] = list(chunks)
 
     def search(

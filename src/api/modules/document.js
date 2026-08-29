@@ -4,8 +4,12 @@ export function listDocuments() {
   return http.get('/documents')
 }
 
-export function getDocument(id) {
-  return http.get(`/documents/${id}`)
+export function getDocument(id, config) {
+  return config ? http.get(`/documents/${id}`, config) : http.get(`/documents/${id}`)
+}
+
+export function retryDocument(id) {
+  return http.post(`/documents/${id}/retry`)
 }
 
 export function deleteDocument(id) {

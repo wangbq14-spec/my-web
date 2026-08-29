@@ -15,6 +15,7 @@ from app.db.session import get_db  # noqa: E402
 from app.core.config import settings  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import document, user  # noqa: F401, E402
+from app.rag.vector_store import factory as vector_store_factory  # noqa: E402
 
 engine = create_engine(
     "sqlite+pysqlite:///:memory:",
@@ -27,9 +28,12 @@ TestSessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 @pytest.fixture(autouse=True)
 def reset_db(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "RAG_UPLOAD_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setattr(vector_store_factory, "SessionLocal", TestSessionLocal)
+    vector_store_factory.get_vector_store.cache_clear()
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     yield
+    vector_store_factory.get_vector_store.cache_clear()
 
 
 @pytest.fixture()

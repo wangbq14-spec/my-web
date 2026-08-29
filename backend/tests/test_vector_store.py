@@ -7,6 +7,7 @@ def test_search_returns_chunks_in_cosine_similarity_order():
     store.upsert_chunks(
         user_id=1,
         document_id=10,
+        generation=1,
         chunks=[
             ChunkVector(chunk_index=0, content="east", embedding=[1.0, 0.0]),
             ChunkVector(chunk_index=1, content="north", embedding=[0.0, 1.0]),
@@ -23,6 +24,7 @@ def test_search_respects_top_k():
     store.upsert_chunks(
         user_id=1,
         document_id=10,
+        generation=1,
         chunks=[
             ChunkVector(chunk_index=0, content="best", embedding=[1.0, 0.0]),
             ChunkVector(chunk_index=1, content="second", embedding=[0.8, 0.2]),
@@ -40,6 +42,7 @@ def test_delete_document_removes_its_chunks():
     store.upsert_chunks(
         user_id=1,
         document_id=10,
+        generation=1,
         chunks=[ChunkVector(chunk_index=0, content="remove", embedding=[1.0, 0.0])],
     )
 
@@ -53,6 +56,7 @@ def test_search_isolates_users():
     store.upsert_chunks(
         user_id=1,
         document_id=10,
+        generation=1,
         chunks=[ChunkVector(chunk_index=0, content="private", embedding=[1.0, 0.0])],
     )
 

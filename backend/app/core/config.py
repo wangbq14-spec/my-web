@@ -46,6 +46,16 @@ class Settings(BaseSettings):
     RAG_CHUNK_OVERLAP: int = 150
     RAG_MAX_CONTEXT_CHARS: int = 12000
 
+    # Asynchronous document processing. Redis is deliberately optional for the
+    # API process: it is opened only when a task is dispatched.
+    REDIS_URL: str = ""
+    DOCUMENT_TASK_QUEUE: str = "document-processing"
+    DOCUMENT_TASK_MAX_RETRIES: int = 5
+    DOCUMENT_TASK_RETRY_BASE_SECONDS: float = 60.0
+    DOCUMENT_TASK_RETRY_MAX_SECONDS: float = 3600.0
+    DOCUMENT_TASK_LEASE_SECONDS: float = 300.0
+    DOCUMENT_TASK_DISPATCH_INTERVAL_SECONDS: float = 5.0
+
 
 @lru_cache
 def get_settings() -> Settings:

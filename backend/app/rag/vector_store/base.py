@@ -20,7 +20,11 @@ class ScoredChunk:
 class VectorStore(ABC):
     @abstractmethod
     def upsert_chunks(
-        self, user_id: int, document_id: int, chunks: list[ChunkVector]
+        self,
+        user_id: int,
+        document_id: int,
+        generation: int,
+        chunks: list[ChunkVector],
     ) -> None:
         raise NotImplementedError
 
