@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     LLM_BASE_URL: str = ""
     LLM_MODEL: str = ""
     LLM_TIMEOUT: float = 30.0
+    AGENT_MAX_STEPS: int = 6
 
     # Embeddings (OpenAI-compatible provider)
     EMBEDDING_API_KEY: str = ""

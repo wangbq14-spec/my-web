@@ -6,17 +6,28 @@ from pydantic import BaseModel
 
 
 class LLMMessage(BaseModel):
-    role: Literal["system", "user", "assistant"]
-    content: str
+    role: Literal["system", "user", "assistant", "tool"]
+    content: str | None = None
+    tool_calls: list["LLMToolCall"] | None = None
+    tool_call_id: str | None = None
+    name: str | None = None
+
+
+class LLMToolCall(BaseModel):
+    id: str
+    name: str
+    arguments: str
 
 
 class LLMResponse(BaseModel):
-    content: str
+    content: str | None = None
+    tool_calls: list[LLMToolCall] | None = None
     model: str | None = None
 
 
 class LLMChunk(BaseModel):
-    content: str
+    content: str | None = None
+    tool_calls: list[LLMToolCall] | None = None
     model: str | None = None
 
 
@@ -43,6 +54,7 @@ class LLMProvider(ABC):
         messages: Sequence[LLMMessage],
         *,
         model: str | None = None,
+        tools: list[dict] | None = None,
     ) -> LLMResponse:
         raise NotImplementedError
 
@@ -52,5 +64,6 @@ class LLMProvider(ABC):
         messages: Sequence[LLMMessage],
         *,
         model: str | None = None,
+        tools: list[dict] | None = None,
     ) -> Iterator[LLMChunk]:
         raise NotImplementedError
