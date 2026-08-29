@@ -33,6 +33,18 @@ class Settings(BaseSettings):
     LLM_MODEL: str = ""
     LLM_TIMEOUT: float = 30.0
 
+    # Embeddings (OpenAI-compatible provider)
+    EMBEDDING_API_KEY: str = ""
+    EMBEDDING_BASE_URL: str = ""
+    EMBEDDING_MODEL: str = ""
+    EMBEDDING_TIMEOUT: float = 30.0
+
+    RAG_UPLOAD_DIR: str = str(BASE_DIR / "data" / "uploads")
+    RAG_MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024
+    RAG_CHUNK_SIZE: int = 1000
+    RAG_CHUNK_OVERLAP: int = 150
+    RAG_MAX_CONTEXT_CHARS: int = 12000
+
 
 @lru_cache
 def get_settings() -> Settings:

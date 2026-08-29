@@ -12,8 +12,9 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 
 from app.db.base import Base  # noqa: E402
 from app.db.session import get_db  # noqa: E402
+from app.core.config import settings  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import user  # noqa: F401, E402
+from app.models import document, user  # noqa: F401, E402
 
 engine = create_engine(
     "sqlite+pysqlite:///:memory:",
@@ -24,7 +25,8 @@ TestSessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 
 @pytest.fixture(autouse=True)
-def reset_db():
+def reset_db(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "RAG_UPLOAD_DIR", str(tmp_path / "uploads"))
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     yield

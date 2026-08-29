@@ -14,7 +14,8 @@ from app.llm.base import (
     LLMUpstreamError,
 )
 from app.models.user import User
-from app.schemas.chat import ChatRequest, ChatResponse
+from app.rag.embeddings.base import EmbeddingError
+from app.schemas.chat import ChatRequest, ChatResponse, CitationOut
 from app.schemas.conversation import ConversationCreate, ConversationOut, ConversationUpdate
 from app.schemas.message import MessageCreate, MessageOut
 from app.services import chat as chat_service
@@ -183,7 +184,12 @@ def chat(
             user_id=current_user.id,
             conversation_id=conversation_id,
             content=data.content,
+            use_rag=data.use_rag,
+            top_k=data.top_k,
         )
+    except EmbeddingError as exc:
+        db.rollback()
+        raise HTTPException(status_code=502, detail="知识库检索失败，请稍后重试") from exc
     except LLMError as exc:
         db.rollback()
         raise _map_llm_error(exc) from exc
@@ -199,7 +205,11 @@ def chat(
 
     db.commit()
 
-    return ChatResponse(user_message=user_message, assistant_message=assistant_message)
+    return ChatResponse(
+        user_message=user_message,
+        assistant_message=assistant_message,
+        sources=[CitationOut.model_validate(citation) for citation in result.sources],
+    )
 
 
 def _sse(event: str, payload: dict) -> str:
@@ -235,6 +245,8 @@ def chat_stream(
 ) -> StreamingResponse:
     user_id = current_user.id
     content = data.content
+    use_rag = data.use_rag
+    top_k = data.top_k
 
     conversation = conversation_service.get_conversation(db, user_id, conversation_id)
     if conversation is None:
@@ -248,6 +260,8 @@ def chat_stream(
         user_id=user_id,
         conversation_id=conversation_id,
         content=content,
+        use_rag=use_rag,
+        top_k=top_k,
     )
     try:
         first_event = next(stream)
@@ -263,6 +277,24 @@ def chat_stream(
             for event in chain((first_event,), stream):
                 if event.type == "delta":
                     yield _sse("delta", {"content": event.content})
+                elif event.type == "sources":
+                    yield _sse(
+                        "sources",
+                        {
+                            "sources": [
+                                CitationOut.model_validate(citation).model_dump()
+                                for citation in (event.sources or [])
+                            ]
+                        },
+                    )
+                elif event.type == "retrieval_error":
+                    yield _sse(
+                        "error",
+                        {
+                            "code": "retrieval_error",
+                            "message": "知识库检索失败，请稍后重试",
+                        },
+                    )
                 elif event.type == "done":
                     db.commit()
                     committed = True

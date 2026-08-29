@@ -85,6 +85,39 @@ describe('streamChat', () => {
     })
   })
 
+  it('sources 事件触发 onSources', async () => {
+    const sse =
+      'event: sources\ndata: {"sources":[{"document_id":1,"filename":"handbook.pdf","chunk_index":3,"score":0.82,"excerpt":"relevant text"}]}\n\n'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(createFakeStream([sse])))
+    const onSources = vi.fn()
+
+    await streamChat({ conversationId: 1, content: 'hi', onSources })
+
+    expect(onSources).toHaveBeenCalledWith({
+      sources: [
+        {
+          document_id: 1,
+          filename: 'handbook.pdf',
+          chunk_index: 3,
+          score: 0.82,
+          excerpt: 'relevant text',
+        },
+      ],
+    })
+  })
+
+  it('useRag=true 时 body 包含 use_rag 和 top_k', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(createFakeStream(['event: done\ndata: {}\n\n']))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await streamChat({ conversationId: 1, content: 'hi', useRag: true, topK: 8 })
+
+    const [, options] = fetchMock.mock.calls[0]
+    expect(JSON.parse(options.body)).toEqual({ content: 'hi', use_rag: true, top_k: 8 })
+  })
+
   it('error event 正确转换', async () => {
     const sse = 'event: error\ndata: {"code":"upstream_error","message":"boom"}\n\n'
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(createFakeStream([sse])))

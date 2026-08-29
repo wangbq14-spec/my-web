@@ -1,5 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   createConversation,
   deleteConversation,
@@ -9,8 +10,12 @@ import {
 import { listMessages } from '../api/modules/message'
 import { streamChat, streamRegenerate } from '../api/stream'
 import AssistantMessage from '../components/chat/AssistantMessage.vue'
+import { useAuthStore } from '../stores/auth'
 
 const MAX_TEXTAREA_HEIGHT = 200
+
+const router = useRouter()
+const authStore = useAuthStore()
 
 const conversations = ref([])
 const conversationListLoading = ref(false)
@@ -27,6 +32,7 @@ const messagesLoading = ref(false)
 const messagesError = ref(null)
 
 const inputContent = ref('')
+const useRag = ref(false)
 const isStreaming = ref(false)
 const error = ref(null)
 const retryContext = ref(null)
@@ -220,6 +226,11 @@ function toggleSidebar() {
   isSidebarOpen.value = !isSidebarOpen.value
 }
 
+function handleLogout() {
+  authStore.logout()
+  router.replace('/login')
+}
+
 function fillSuggestion(text) {
   inputContent.value = text
   nextTick(() => {
@@ -266,17 +277,29 @@ function onComposerKeydown(event) {
   }
 }
 
-async function executeStreaming({ stream, conversationId, content, userMessage, assistantMessage, removeOnError }) {
+async function executeStreaming({
+  stream,
+  conversationId,
+  content,
+  useRag,
+  userMessage,
+  assistantMessage,
+  removeOnError,
+}) {
   isStreaming.value = true
   activeController = new AbortController()
 
   await stream({
     conversationId,
     ...(content === undefined ? {} : { content }),
+    ...(useRag === undefined ? {} : { useRag }),
     signal: activeController.signal,
     onDelta({ content: delta }) {
       assistantMessage.content += delta
       if (shouldAutoScroll.value) nextTick(() => scrollToBottom())
+    },
+    onSources(data) {
+      assistantMessage.sources = data?.sources || []
     },
     onDone(data) {
       if (userMessage) userMessage.id = data.user_message_id
@@ -296,7 +319,7 @@ async function executeStreaming({ stream, conversationId, content, userMessage, 
         const index = messages.value.indexOf(assistantMessage)
         if (index !== -1) messages.value.splice(index, 1)
       } else {
-        retryContext.value = { conversationId, content, userMessage, assistantMessage }
+        retryContext.value = { conversationId, content, useRag, userMessage, assistantMessage }
       }
       error.value = '生成失败，请重试'
     },
@@ -321,6 +344,7 @@ async function sendMessage() {
     role: 'assistant',
     content: '',
     model: null,
+    sources: [],
     isStreaming: true,
     stopped: false,
   })
@@ -332,6 +356,7 @@ async function sendMessage() {
     stream: streamChat,
     conversationId: activeConversationId.value,
     content,
+    useRag: useRag.value,
     userMessage,
     assistantMessage,
     removeOnError: false,
@@ -345,6 +370,7 @@ async function retry() {
   error.value = null
   retryContext.value = null
   context.assistantMessage.content = ''
+  context.assistantMessage.sources = []
   context.assistantMessage.isStreaming = true
   context.assistantMessage.stopped = false
 
@@ -361,6 +387,7 @@ async function regenerate() {
     role: 'assistant',
     content: '',
     model: null,
+    sources: [],
     isStreaming: true,
     stopped: false,
   })
@@ -547,8 +574,18 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="sidebar-footer">
-        <span class="footer-dot" />
-        <span>已登录</span>
+        <div class="footer-user">
+          <span class="footer-dot" />
+          <span class="footer-username">{{ authStore.user?.username || '已登录' }}</span>
+        </div>
+        <button
+          type="button"
+          class="logout-btn"
+          aria-label="退出登录"
+          @click="handleLogout"
+        >
+          退出登录
+        </button>
       </div>
     </aside>
 
@@ -708,6 +745,15 @@ onBeforeUnmount(() => {
           />
           <div class="composer-actions">
             <span class="composer-hint">Enter 发送 · Shift+Enter 换行</span>
+            <button
+              type="button"
+              class="rag-toggle"
+              :aria-pressed="useRag"
+              :class="{ active: useRag }"
+              @click="useRag = !useRag"
+            >
+              知识库
+            </button>
             <button
               v-if="showRegenerate"
               type="button"
@@ -1008,18 +1054,51 @@ onBeforeUnmount(() => {
 .sidebar-footer {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 12px;
   padding: 12px 16px;
   border-top: 1px solid var(--border);
   color: var(--text-secondary);
   font-size: 13px;
 }
 
+.footer-user {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
 .footer-dot {
+  flex-shrink: 0;
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: #22c55e;
+}
+
+.footer-username {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logout-btn {
+  flex-shrink: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.logout-btn:hover,
+.logout-btn:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text-primary);
 }
 
 .main {
@@ -1308,6 +1387,27 @@ onBeforeUnmount(() => {
 .composer-hint {
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+.rag-toggle {
+  margin-left: auto;
+  margin-right: 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.rag-toggle:hover,
+.rag-toggle:focus-visible,
+.rag-toggle.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft, rgba(79, 70, 229, 0.08));
 }
 
 .send-btn {

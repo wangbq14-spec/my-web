@@ -53,7 +53,7 @@ const features = [
       <div class="actions">
         <RouterLink
           id="start"
-          to="/dashboard"
+          to="/login"
           class="btn btn-primary"
         >
           开始体验

@@ -2,6 +2,14 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ChatView from './ChatView.vue'
 
+const authStore = vi.hoisted(() => ({
+  user: { username: 'alice' },
+  logout: vi.fn(),
+}))
+const routerMock = vi.hoisted(() => ({
+  replace: vi.fn(),
+}))
+
 vi.mock('../api/modules/conversation', () => ({
   listConversations: vi.fn(),
   createConversation: vi.fn(),
@@ -14,6 +22,12 @@ vi.mock('../api/modules/message', () => ({
 vi.mock('../api/stream', () => ({
   streamChat: vi.fn(),
   streamRegenerate: vi.fn(),
+}))
+vi.mock('../stores/auth', () => ({
+  useAuthStore: () => authStore,
+}))
+vi.mock('vue-router', () => ({
+  useRouter: () => routerMock,
 }))
 
 import {
@@ -45,6 +59,31 @@ describe('ChatView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.unstubAllGlobals()
+    authStore.user = { username: 'alice' }
+  })
+
+  it('侧边栏显示退出登录按钮', async () => {
+    listConversations.mockResolvedValue([])
+    const wrapper = await mountChat()
+
+    expect(wrapper.find('.logout-btn').text()).toBe('退出登录')
+  })
+
+  it('点击退出登录会清理认证状态并跳转登录页', async () => {
+    listConversations.mockResolvedValue([])
+    const wrapper = await mountChat()
+
+    await wrapper.find('.logout-btn').trigger('click')
+
+    expect(authStore.logout).toHaveBeenCalledTimes(1)
+    expect(routerMock.replace).toHaveBeenCalledWith('/login')
+  })
+
+  it('退出登录按钮位于侧边栏内', async () => {
+    listConversations.mockResolvedValue([])
+    const wrapper = await mountChat()
+
+    expect(wrapper.find('.sidebar').find('.logout-btn').exists()).toBe(true)
   })
 
   it('加载 conversation list', async () => {
@@ -333,6 +372,78 @@ describe('ChatView', () => {
     await wrapper.find('.menu-btn').trigger('click')
 
     expect(wrapper.find('.sidebar').classes()).toContain('open')
+  })
+
+  it('RAG toggle 默认关闭且点击后开启', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    const toggle = wrapper.find('.rag-toggle')
+
+    expect(toggle.attributes('aria-pressed')).toBe('false')
+    await toggle.trigger('click')
+    expect(toggle.attributes('aria-pressed')).toBe('true')
+  })
+
+  it('RAG toggle 开启后发送请求携带 useRag', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    streamChat.mockImplementation(() => new Promise(() => {}))
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    await wrapper.find('.rag-toggle').trigger('click')
+    await send(wrapper, 'retrieve this')
+
+    expect(streamChat.mock.calls[0][0].useRag).toBe(true)
+  })
+
+  it('stores streaming sources and delta on the assistant message', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    streamChat.mockImplementation(async ({ onSources, onDelta, onDone }) => {
+      onSources({
+        sources: [{ document_id: 1, filename: 'handbook.pdf', chunk_index: 3, score: 0.82, excerpt: 'Relevant excerpt' }],
+      })
+      onDelta({ content: 'Grounded answer' })
+      onDone({ user_message_id: 10, assistant_message_id: 11, model: 'm' })
+    })
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    await send(wrapper, 'retrieve this')
+
+    const assistant = wrapper.findComponent({ name: 'AssistantMessage' })
+    expect(assistant.props('message').content).toBe('Grounded answer')
+    expect(assistant.props('message').sources).toEqual([
+      expect.objectContaining({ filename: 'handbook.pdf', chunk_index: 3 }),
+    ])
+    expect(wrapper.find('.sources').text()).toContain('handbook.pdf')
+  })
+
+  it('shows the existing error banner for a retrieval_error without breaking the UI', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    streamChat.mockImplementation(async ({ onError }) => {
+      onError({ type: 'stream', code: 'retrieval_error' })
+    })
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    await send(wrapper, 'retrieve this')
+
+    expect(wrapper.find('.error-banner').text()).toContain('生成失败，请重试')
+    expect(wrapper.find('.composer-input').exists()).toBe(true)
+  })
+
+  it('renders the RAG toggle in the mobile composer', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+
+    expect(wrapper.find('.rag-toggle').exists()).toBe(true)
   })
 
   it('opens the conversation operation menu', async () => {

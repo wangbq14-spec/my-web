@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterator, Literal
 
 from sqlalchemy import select
@@ -8,6 +8,9 @@ from app.llm.base import LLMError, LLMMessage
 from app.llm.factory import get_llm_provider
 from app.models.message import Message
 from app.models.user import utcnow_naive
+from app.rag.context import Citation, build_citations, build_rag_system_prompt
+from app.rag.embeddings.base import EmbeddingError
+from app.rag.retrieval import retrieve
 from app.services.conversation import get_conversation
 
 
@@ -15,6 +18,7 @@ from app.services.conversation import get_conversation
 class ChatResult:
     user_message: Message
     assistant_message: Message
+    sources: list[Citation] = field(default_factory=list)
 
 
 def send_chat_message(
@@ -22,6 +26,8 @@ def send_chat_message(
     user_id: int,
     conversation_id: int,
     content: str,
+    use_rag: bool = False,
+    top_k: int = 5,
 ) -> ChatResult | None:
     conversation = get_conversation(session, user_id, conversation_id)
     if conversation is None:
@@ -48,6 +54,13 @@ def send_chat_message(
     )
 
     llm_messages = [LLMMessage(role=m.role, content=m.content) for m in history]
+    sources: list[Citation] = []
+    if use_rag:
+        retrieved = retrieve(session, user_id, content, top_k)
+        llm_messages = [
+            LLMMessage(role="system", content=build_rag_system_prompt(content, retrieved))
+        ] + llm_messages
+        sources = build_citations(retrieved)
 
     provider = get_llm_provider()
     response = provider.complete(llm_messages, model=conversation.model)
@@ -65,16 +78,23 @@ def send_chat_message(
     conversation.updated_at = utcnow_naive()
     session.flush()
 
-    return ChatResult(user_message=user_message, assistant_message=assistant_message)
+    return ChatResult(
+        user_message=user_message,
+        assistant_message=assistant_message,
+        sources=sources,
+    )
 
 
 @dataclass
 class StreamEvent:
-    type: Literal["delta", "done", "not_found", "no_user_message"]
+    type: Literal[
+        "delta", "done", "not_found", "no_user_message", "sources", "retrieval_error"
+    ]
     content: str | None = None
     user_message_id: int | None = None
     assistant_message_id: int | None = None
     model: str | None = None
+    sources: list[Citation] | None = None
 
 
 def stream_chat_message(
@@ -82,11 +102,23 @@ def stream_chat_message(
     user_id: int,
     conversation_id: int,
     content: str,
+    use_rag: bool = False,
+    top_k: int = 5,
 ) -> Iterator[StreamEvent]:
     conversation = get_conversation(session, user_id, conversation_id)
     if conversation is None:
         yield StreamEvent(type="not_found")
         return
+
+    retrieved = []
+    citations: list[Citation] = []
+    if use_rag:
+        try:
+            retrieved = retrieve(session, user_id, content, top_k)
+        except EmbeddingError:
+            yield StreamEvent(type="retrieval_error")
+            return
+        citations = build_citations(retrieved)
 
     user_message = Message(
         conversation_id=conversation_id,
@@ -109,8 +141,15 @@ def stream_chat_message(
     )
 
     llm_messages = [LLMMessage(role=m.role, content=m.content) for m in history]
+    if use_rag:
+        llm_messages = [
+            LLMMessage(role="system", content=build_rag_system_prompt(content, retrieved))
+        ] + llm_messages
 
     provider = get_llm_provider()
+
+    if use_rag:
+        yield StreamEvent(type="sources", sources=citations)
 
     chunks: list[str] = []
     actual_model: str | None = None

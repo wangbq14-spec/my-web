@@ -7,7 +7,23 @@ const props = defineProps({
 })
 
 const copyLabel = ref('Copy')
+const expandedSourceIndexes = ref(new Set())
 let copyResetTimer = null
+
+function toggleSource(index) {
+  const next = new Set(expandedSourceIndexes.value)
+  if (next.has(index)) {
+    next.delete(index)
+  } else {
+    next.add(index)
+  }
+  expandedSourceIndexes.value = next
+}
+
+function formatScore(score) {
+  const value = Number(score)
+  return Number.isFinite(value) ? `${Math.round(value * 100)}%` : ''
+}
 
 async function copyMessage() {
   try {
@@ -35,6 +51,39 @@ onBeforeUnmount(() => clearTimeout(copyResetTimer))
     </div>
     <div class="assistant-body">
       <MarkdownRenderer :content="message.content" />
+      <section
+        v-if="(message.sources || []).length > 0"
+        class="sources"
+        aria-label="Sources"
+      >
+        <div class="sources-title">
+          Sources
+        </div>
+        <div
+          v-for="(source, index) in message.sources || []"
+          :key="`${source.document_id}-${source.chunk_index}-${index}`"
+          class="source-item"
+        >
+          <button
+            type="button"
+            class="source-toggle"
+            :aria-expanded="expandedSourceIndexes.has(index)"
+            :aria-controls="`source-detail-${index}`"
+            @click="toggleSource(index)"
+          >
+            <span>{{ index + 1 }}. {{ source.filename || 'Unknown document' }} · Chunk {{ source.chunk_index ?? 0 }}</span>
+            <span aria-hidden="true">⌄</span>
+          </button>
+          <div
+            v-if="expandedSourceIndexes.has(index)"
+            :id="`source-detail-${index}`"
+            class="source-detail"
+          >
+            <p>{{ source.excerpt || 'No excerpt available.' }}</p>
+            <span v-if="formatScore(source.score)">Score {{ formatScore(source.score) }}</span>
+          </div>
+        </div>
+      </section>
       <span
         v-if="message.isStreaming"
         class="caret"
@@ -115,6 +164,53 @@ onBeforeUnmount(() => clearTimeout(copyResetTimer))
 .copy-btn:hover,
 .copy-btn:focus-visible {
   color: var(--accent, #4f46e5);
+}
+
+.sources {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-secondary, #71717a);
+}
+
+.sources-title {
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.source-item {
+  border-top: 1px solid var(--border, #e8e8ea);
+}
+
+.source-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.source-toggle:hover,
+.source-toggle:focus-visible {
+  color: var(--accent, #4f46e5);
+}
+
+.source-detail {
+  margin: -1px 0 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--surface-hover, #f4f4f5);
+  overflow-wrap: anywhere;
+}
+
+.source-detail p {
+  margin: 0 0 4px;
 }
 
 @keyframes blink {

@@ -6,7 +6,17 @@ function buildUrl(conversationId, path) {
   return `${baseURL}/conversations/${conversationId}/${path}`
 }
 
-async function streamRequest({ conversationId, path, content, signal, onStart, onDelta, onDone, onError }) {
+async function streamRequest({
+  conversationId,
+  path,
+  body,
+  signal,
+  onStart,
+  onDelta,
+  onSources,
+  onDone,
+  onError,
+}) {
   const token = getAccessToken()
   const headers = {
     'Content-Type': 'application/json',
@@ -20,7 +30,7 @@ async function streamRequest({ conversationId, path, content, signal, onStart, o
     response = await fetch(buildUrl(conversationId, path), {
       method: 'POST',
       headers,
-      ...(content === undefined ? {} : { body: JSON.stringify({ content }) }),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal,
     })
   } catch (error) {
@@ -55,6 +65,9 @@ async function streamRequest({ conversationId, path, content, signal, onStart, o
         break
       case 'delta':
         onDelta?.(event.data)
+        break
+      case 'sources':
+        onSources?.(event.data)
         break
       case 'done':
         onDone?.(event.data)
@@ -97,10 +110,49 @@ async function streamRequest({ conversationId, path, content, signal, onStart, o
   }
 }
 
-export function streamChat(options) {
-  return streamRequest({ ...options, path: 'chat/stream' })
+export function streamChat({
+  conversationId,
+  content,
+  useRag = false,
+  topK = 5,
+  signal,
+  onStart,
+  onDelta,
+  onSources,
+  onDone,
+  onError,
+}) {
+  const body = useRag ? { content, use_rag: true, top_k: topK } : { content }
+  return streamRequest({
+    conversationId,
+    path: 'chat/stream',
+    body,
+    signal,
+    onStart,
+    onDelta,
+    onSources,
+    onDone,
+    onError,
+  })
 }
 
-export function streamRegenerate(options) {
-  return streamRequest({ ...options, path: 'regenerate/stream' })
+export function streamRegenerate({
+  conversationId,
+  signal,
+  onStart,
+  onDelta,
+  onSources,
+  onDone,
+  onError,
+}) {
+  return streamRequest({
+    conversationId,
+    path: 'regenerate/stream',
+    signal,
+    onStart,
+    onDelta,
+    onSources,
+    onDone,
+    onError,
+  })
 }

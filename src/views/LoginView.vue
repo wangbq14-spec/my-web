@@ -1,29 +1,14 @@
 <script setup>
 import { ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 
-const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 
 const username = ref('')
 const password = ref('')
 const errorMessage = ref('')
-
-function resolveRedirect() {
-  const redirect = route.query.redirect
-
-  if (
-    typeof redirect === 'string' &&
-    redirect.startsWith('/') &&
-    !redirect.startsWith('//')
-  ) {
-    return redirect
-  }
-
-  return '/dashboard'
-}
 
 async function handleSubmit() {
   errorMessage.value = ''
@@ -38,7 +23,7 @@ async function handleSubmit() {
       username: username.value.trim(),
       password: password.value,
     })
-    router.replace(resolveRedirect())
+    router.replace('/chat')
   } catch (error) {
     errorMessage.value = error?.message || '登录失败，请稍后重试'
   }

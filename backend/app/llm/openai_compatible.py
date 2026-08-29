@@ -147,3 +147,5 @@ class OpenAICompatibleProvider(LLMProvider):
             ) from exc
         except httpx.RequestError as exc:
             raise LLMUpstreamError("网络连接失败") from exc
+
+

@@ -59,4 +59,47 @@ describe('AssistantMessage', () => {
     await vi.advanceTimersByTimeAsync(1800)
     expect(wrapper.find('.copy-btn').text()).toBe('Copy')
   })
+
+  it('shows Sources with filename and Chunk number', () => {
+    const wrapper = mount(AssistantMessage, {
+      props: {
+        message: {
+          content: 'Answer',
+          isStreaming: false,
+          stopped: false,
+          sources: [{ document_id: 1, filename: 'handbook.pdf', chunk_index: 3, score: 0.82 }],
+        },
+      },
+    })
+
+    expect(wrapper.find('.sources').exists()).toBe(true)
+    expect(wrapper.find('.source-toggle').text()).toContain('1. handbook.pdf · Chunk 3')
+  })
+
+  it('expands a source to show its excerpt', async () => {
+    const wrapper = mount(AssistantMessage, {
+      props: {
+        message: {
+          content: 'Answer',
+          isStreaming: false,
+          stopped: false,
+          sources: [{ filename: 'handbook.pdf', chunk_index: 3, score: 0.82, excerpt: 'Relevant excerpt' }],
+        },
+      },
+    })
+
+    await wrapper.find('.source-toggle').trigger('click')
+
+    expect(wrapper.find('.source-toggle').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.find('.source-detail').text()).toContain('Relevant excerpt')
+    expect(wrapper.find('.source-detail').text()).toContain('82%')
+  })
+
+  it('does not show Sources for legacy messages without sources', () => {
+    const wrapper = mount(AssistantMessage, {
+      props: { message: { content: 'Answer', isStreaming: false, stopped: false } },
+    })
+
+    expect(wrapper.find('.sources').exists()).toBe(false)
+  })
 })
