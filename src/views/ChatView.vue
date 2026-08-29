@@ -8,7 +8,7 @@ import {
   updateConversation,
 } from '../api/modules/conversation'
 import { listMessages } from '../api/modules/message'
-import { streamChat, streamRegenerate } from '../api/stream'
+import { streamAgent, streamChat, streamRegenerate } from '../api/stream'
 import AssistantMessage from '../components/chat/AssistantMessage.vue'
 import { useAuthStore } from '../stores/auth'
 
@@ -32,7 +32,7 @@ const messagesLoading = ref(false)
 const messagesError = ref(null)
 
 const inputContent = ref('')
-const useRag = ref(false)
+const mode = ref('chat')
 const isStreaming = ref(false)
 const error = ref(null)
 const retryContext = ref(null)
@@ -279,37 +279,49 @@ function onComposerKeydown(event) {
 
 async function executeStreaming({
   stream,
+  mode: streamMode,
   conversationId,
   content,
-  useRag,
   userMessage,
   assistantMessage,
   removeOnError,
 }) {
   isStreaming.value = true
   activeController = new AbortController()
+  let streamTerminal = false
+  const selectedStream = stream || (streamMode === 'agent' ? streamAgent : streamChat)
 
-  await stream({
+  const callbacks = {
     conversationId,
     ...(content === undefined ? {} : { content }),
-    ...(useRag === undefined ? {} : { useRag }),
+    ...(selectedStream === streamChat ? { useRag: streamMode === 'rag' } : {}),
     signal: activeController.signal,
     onDelta({ content: delta }) {
+      if (streamTerminal) return
       assistantMessage.content += delta
       if (shouldAutoScroll.value) nextTick(() => scrollToBottom())
     },
     onSources(data) {
+      if (streamTerminal) return
       assistantMessage.sources = data?.sources || []
     },
     onDone(data) {
+      if (streamTerminal) return
+      streamTerminal = true
       if (userMessage) userMessage.id = data.user_message_id
       assistantMessage.id = data.assistant_message_id
       assistantMessage.model = data.model
       assistantMessage.isStreaming = false
+      assistantMessage.agentStatus = null
+      assistantMessage.activeTool = null
       retryContext.value = null
     },
     onError(err) {
+      if (streamTerminal) return
+      streamTerminal = true
       assistantMessage.isStreaming = false
+      assistantMessage.agentStatus = null
+      assistantMessage.activeTool = null
       if (err?.type === 'abort') {
         assistantMessage.stopped = true
         return
@@ -319,11 +331,29 @@ async function executeStreaming({
         const index = messages.value.indexOf(assistantMessage)
         if (index !== -1) messages.value.splice(index, 1)
       } else {
-        retryContext.value = { conversationId, content, useRag, userMessage, assistantMessage }
+        retryContext.value = { mode: streamMode, conversationId, content, userMessage, assistantMessage }
       }
       error.value = '生成失败，请重试'
     },
-  })
+  }
+
+  if (streamMode === 'agent') {
+    callbacks.onAgentStep = () => {
+      if (streamTerminal) return
+      assistantMessage.agentStatus = 'thinking'
+      assistantMessage.activeTool = null
+    }
+    callbacks.onToolStart = ({ name }) => {
+      if (streamTerminal) return
+      assistantMessage.agentStatus = 'using_tool'
+      assistantMessage.activeTool = name
+    }
+    callbacks.onToolResult = () => {
+      // Tool inputs and results are intentionally not exposed in the UI.
+    }
+  }
+
+  await selectedStream(callbacks)
 
   isStreaming.value = false
   activeController = null
@@ -347,16 +377,17 @@ async function sendMessage() {
     sources: [],
     isStreaming: true,
     stopped: false,
+    agentStatus: null,
+    activeTool: null,
   })
   messages.value.push(userMessage, assistantMessage)
   await nextTick()
   scrollToBottom()
 
   await executeStreaming({
-    stream: streamChat,
+    mode: mode.value,
     conversationId: activeConversationId.value,
     content,
-    useRag: useRag.value,
     userMessage,
     assistantMessage,
     removeOnError: false,
@@ -373,8 +404,10 @@ async function retry() {
   context.assistantMessage.sources = []
   context.assistantMessage.isStreaming = true
   context.assistantMessage.stopped = false
+  context.assistantMessage.agentStatus = null
+  context.assistantMessage.activeTool = null
 
-  await executeStreaming({ stream: streamChat, ...context, removeOnError: false })
+  await executeStreaming({ ...context, removeOnError: false })
 }
 
 async function regenerate() {
@@ -390,6 +423,8 @@ async function regenerate() {
     sources: [],
     isStreaming: true,
     stopped: false,
+    agentStatus: null,
+    activeTool: null,
   })
   messages.value.push(assistantMessage)
   await nextTick()
@@ -745,15 +780,35 @@ onBeforeUnmount(() => {
           />
           <div class="composer-actions">
             <span class="composer-hint">Enter 发送 · Shift+Enter 换行</span>
-            <button
-              type="button"
-              class="rag-toggle"
-              :aria-pressed="useRag"
-              :class="{ active: useRag }"
-              @click="useRag = !useRag"
-            >
-              知识库
-            </button>
+            <div class="mode-selector">
+              <button
+                type="button"
+                class="mode-btn"
+                :class="{ active: mode === 'chat' }"
+                :aria-pressed="mode === 'chat'"
+                @click="mode = 'chat'"
+              >
+                普通
+              </button>
+              <button
+                type="button"
+                class="mode-btn"
+                :class="{ active: mode === 'rag' }"
+                :aria-pressed="mode === 'rag'"
+                @click="mode = 'rag'"
+              >
+                知识库
+              </button>
+              <button
+                type="button"
+                class="mode-btn"
+                :class="{ active: mode === 'agent' }"
+                :aria-pressed="mode === 'agent'"
+                @click="mode = 'agent'"
+              >
+                Agent
+              </button>
+            </div>
             <button
               v-if="showRegenerate"
               type="button"
@@ -1389,22 +1444,30 @@ onBeforeUnmount(() => {
   color: var(--text-secondary);
 }
 
-.rag-toggle {
+.mode-selector {
   margin-left: auto;
   margin-right: 8px;
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+}
+
+.mode-btn {
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 4px 8px;
-  background: var(--surface);
+  background: transparent;
   color: var(--text-secondary);
   font: inherit;
   font-size: 12px;
   cursor: pointer;
 }
 
-.rag-toggle:hover,
-.rag-toggle:focus-visible,
-.rag-toggle.active {
+.mode-btn:hover,
+.mode-btn:focus-visible,
+.mode-btn.active {
   border-color: var(--accent);
   color: var(--accent);
   background: var(--accent-soft, rgba(79, 70, 229, 0.08));

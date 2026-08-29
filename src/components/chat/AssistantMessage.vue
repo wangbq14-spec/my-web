@@ -1,5 +1,5 @@
 <script setup>
-import { onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import MarkdownRenderer from './MarkdownRenderer.vue'
 
 const props = defineProps({
@@ -9,6 +9,14 @@ const props = defineProps({
 const copyLabel = ref('Copy')
 const expandedSourceIndexes = ref(new Set())
 let copyResetTimer = null
+
+const agentStatusLabel = computed(() => {
+  if (!props.message.agentStatus) return ''
+  if (props.message.activeTool === 'calculator') return '⌕ 正在计算…'
+  if (props.message.activeTool === 'knowledge_search') return '⌕ 正在搜索知识库…'
+  if (props.message.activeTool) return '正在使用工具…'
+  return '✦ 正在分析…'
+})
 
 function toggleSource(index) {
   const next = new Set(expandedSourceIndexes.value)
@@ -50,6 +58,12 @@ onBeforeUnmount(() => clearTimeout(copyResetTimer))
       ✦
     </div>
     <div class="assistant-body">
+      <div
+        v-if="agentStatusLabel"
+        class="agent-status"
+      >
+        {{ agentStatusLabel }}
+      </div>
       <MarkdownRenderer :content="message.content" />
       <section
         v-if="(message.sources || []).length > 0"
@@ -132,6 +146,12 @@ onBeforeUnmount(() => clearTimeout(copyResetTimer))
   flex: 1;
   min-width: 0;
   padding-top: 2px;
+}
+
+.agent-status {
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--text-secondary, #71717a);
 }
 
 .caret {

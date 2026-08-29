@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { streamChat, streamRegenerate } from './stream'
+import { streamAgent, streamChat, streamRegenerate } from './stream'
 
 function encode(text) {
   return new TextEncoder().encode(text)
@@ -180,5 +180,97 @@ describe('streamRegenerate', () => {
     expect(url).toContain('/conversations/1/regenerate/stream')
     expect(options.body).toBeUndefined()
     expect(onDone).toHaveBeenCalledWith({ assistant_message_id: 2, model: 'm' })
+  })
+})
+
+describe('streamAgent', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    localStorage.setItem('access_token', 'test-token')
+    vi.unstubAllGlobals()
+  })
+
+  it('posts content to the agent stream with authorization', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(createFakeStream(['event: done\ndata: {}\n\n']))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await streamAgent({ conversationId: 1, content: 'research this' })
+
+    const [url, options] = fetchMock.mock.calls[0]
+    expect(url).toContain('/conversations/1/agent/stream')
+    expect(options.method).toBe('POST')
+    expect(options.body).toBe(JSON.stringify({ content: 'research this' }))
+    expect(options.headers.Authorization).toBe('Bearer test-token')
+  })
+
+  it('dispatches agent events in stream order', async () => {
+    const sse =
+      'event: start\ndata: {"conversation_id":1}\n\n' +
+      'event: agent_step\ndata: {"step":"Planning"}\n\n' +
+      'event: tool_start\ndata: {"tool_call_id":"call-1","name":"search"}\n\n' +
+      'event: tool_result\ndata: {"tool_call_id":"call-1","name":"search","success":true,"summary":"Found results"}\n\n' +
+      'event: delta\ndata: {"content":"Hello "}\n\n' +
+      'event: delta\ndata: {"content":"world"}\n\n' +
+      'event: done\ndata: {"user_message_id":1,"assistant_message_id":2,"model":"agent-model"}\n\n'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(createFakeStream([sse])))
+
+    const calls = []
+    const onStart = vi.fn(() => calls.push('start'))
+    const onAgentStep = vi.fn(() => calls.push('agent_step'))
+    const onToolStart = vi.fn(() => calls.push('tool_start'))
+    const onToolResult = vi.fn(() => calls.push('tool_result'))
+    const onDelta = vi.fn(() => calls.push('delta'))
+    const onDone = vi.fn(() => calls.push('done'))
+
+    await streamAgent({
+      conversationId: 1,
+      content: 'research this',
+      onStart,
+      onAgentStep,
+      onToolStart,
+      onToolResult,
+      onDelta,
+      onDone,
+    })
+
+    expect(calls).toEqual([
+      'start',
+      'agent_step',
+      'tool_start',
+      'tool_result',
+      'delta',
+      'delta',
+      'done',
+    ])
+    expect(onAgentStep).toHaveBeenCalledWith({ step: 'Planning' })
+    expect(onToolStart).toHaveBeenCalledWith({ tool_call_id: 'call-1', name: 'search' })
+    expect(onToolResult).toHaveBeenCalledWith({
+      tool_call_id: 'call-1',
+      name: 'search',
+      success: true,
+      summary: 'Found results',
+    })
+    expect(onDelta.mock.calls.map(([event]) => event.content).join('')).toBe('Hello world')
+    expect(onDone).toHaveBeenCalledWith({
+      user_message_id: 1,
+      assistant_message_id: 2,
+      model: 'agent-model',
+    })
+  })
+
+  it('converts error events to stream errors', async () => {
+    const sse = 'event: error\ndata: {"code":"tool_failed","message":"Search failed"}\n\n'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(createFakeStream([sse])))
+    const onError = vi.fn()
+
+    await streamAgent({ conversationId: 1, content: 'research this', onError })
+
+    expect(onError).toHaveBeenCalledWith({
+      type: 'stream',
+      code: 'tool_failed',
+      message: 'Search failed',
+    })
   })
 })

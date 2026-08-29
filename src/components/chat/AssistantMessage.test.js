@@ -102,4 +102,56 @@ describe('AssistantMessage', () => {
 
     expect(wrapper.find('.sources').exists()).toBe(false)
   })
+
+  it('shows the calculator Agent status', () => {
+    const wrapper = mount(AssistantMessage, {
+      props: {
+        message: {
+          content: 'Answer',
+          isStreaming: true,
+          stopped: false,
+          agentStatus: 'using_tool',
+          activeTool: 'calculator',
+        },
+      },
+    })
+
+    expect(wrapper.find('.agent-status').text()).toBe('⌕ 正在计算…')
+  })
+
+  it('shows the knowledge search Agent status', () => {
+    const wrapper = mount(AssistantMessage, {
+      props: {
+        message: {
+          content: 'Answer',
+          isStreaming: true,
+          stopped: false,
+          agentStatus: 'using_tool',
+          activeTool: 'knowledge_search',
+        },
+      },
+    })
+
+    expect(wrapper.find('.agent-status').text()).toBe('⌕ 正在搜索知识库…')
+  })
+
+  it('keeps Agent status outside Markdown without rendering reasoning text', () => {
+    const wrapper = mount(AssistantMessage, {
+      props: {
+        message: {
+          content: '**Final answer**',
+          isStreaming: true,
+          stopped: false,
+          agentStatus: 'thinking',
+          activeTool: null,
+          reasoning: 'private reasoning chain',
+        },
+      },
+    })
+
+    expect(wrapper.find('.agent-status').text()).toBe('✦ 正在分析…')
+    expect(wrapper.findComponent({ name: 'MarkdownRenderer' }).text()).toBe('Final answer')
+    expect(wrapper.findComponent({ name: 'MarkdownRenderer' }).text()).not.toMatch(/reasoning|chain/i)
+    expect(wrapper.text()).not.toMatch(/reasoning|chain/i)
+  })
 })

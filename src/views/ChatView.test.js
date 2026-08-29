@@ -20,6 +20,7 @@ vi.mock('../api/modules/message', () => ({
   listMessages: vi.fn(),
 }))
 vi.mock('../api/stream', () => ({
+  streamAgent: vi.fn(),
   streamChat: vi.fn(),
   streamRegenerate: vi.fn(),
 }))
@@ -36,7 +37,7 @@ import {
   updateConversation,
 } from '../api/modules/conversation'
 import { listMessages } from '../api/modules/message'
-import { streamChat, streamRegenerate } from '../api/stream'
+import { streamAgent, streamChat, streamRegenerate } from '../api/stream'
 
 async function mountChat() {
   const wrapper = mount(ChatView)
@@ -53,6 +54,10 @@ async function send(wrapper, text) {
   await wrapper.find('.composer-input').setValue(text)
   await wrapper.find('.send-btn').trigger('click')
   await flushPromises()
+}
+
+function modeButton(wrapper, label) {
+  return wrapper.findAll('.mode-btn').find((button) => button.text() === label)
 }
 
 describe('ChatView', () => {
@@ -374,29 +379,130 @@ describe('ChatView', () => {
     expect(wrapper.find('.sidebar').classes()).toContain('open')
   })
 
-  it('RAG toggle 默认关闭且点击后开启', async () => {
+  it('defaults to chat mode with 普通 active', async () => {
     listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
     listMessages.mockResolvedValue([])
     const wrapper = await mountChat()
     await openFirstConversation(wrapper)
-    const toggle = wrapper.find('.rag-toggle')
 
-    expect(toggle.attributes('aria-pressed')).toBe('false')
-    await toggle.trigger('click')
-    expect(toggle.attributes('aria-pressed')).toBe('true')
+    expect(modeButton(wrapper, '普通').classes()).toContain('active')
+    expect(modeButton(wrapper, '普通').attributes('aria-pressed')).toBe('true')
   })
 
-  it('RAG toggle 开启后发送请求携带 useRag', async () => {
+  it('switches to RAG mode and sends streamChat with useRag', async () => {
     listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
     listMessages.mockResolvedValue([])
-    streamChat.mockImplementation(() => new Promise(() => {}))
+    streamChat.mockImplementation(async ({ onDone }) => {
+      onDone({ user_message_id: 10, assistant_message_id: 11, model: 'm' })
+    })
 
     const wrapper = await mountChat()
     await openFirstConversation(wrapper)
-    await wrapper.find('.rag-toggle').trigger('click')
+    await modeButton(wrapper, '知识库').trigger('click')
     await send(wrapper, 'retrieve this')
 
+    expect(modeButton(wrapper, '知识库').classes()).toContain('active')
     expect(streamChat.mock.calls[0][0].useRag).toBe(true)
+  })
+
+  it('switches to Agent mode', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+
+    await modeButton(wrapper, 'Agent').trigger('click')
+
+    expect(modeButton(wrapper, 'Agent').classes()).toContain('active')
+    expect(modeButton(wrapper, 'Agent').attributes('aria-pressed')).toBe('true')
+  })
+
+  it('keeps exactly one mode active', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+
+    for (const label of ['知识库', 'Agent', '普通']) {
+      await modeButton(wrapper, label).trigger('click')
+      expect(wrapper.findAll('.mode-btn.active')).toHaveLength(1)
+      expect(modeButton(wrapper, label).classes()).toContain('active')
+    }
+  })
+
+  it('sends in Agent mode through streamAgent without streamChat', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    streamAgent.mockImplementation(async ({ onDone }) => {
+      onDone({ user_message_id: 10, assistant_message_id: 11, model: 'm' })
+    })
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    await modeButton(wrapper, 'Agent').trigger('click')
+    await send(wrapper, 'act on this')
+
+    expect(streamAgent).toHaveBeenCalledWith(expect.objectContaining({ content: 'act on this' }))
+    expect(streamChat).not.toHaveBeenCalled()
+  })
+
+  it('uses the latest tool_start state without adding assistant messages', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    streamAgent.mockImplementation(async ({ onAgentStep, onToolStart }) => {
+      onAgentStep({ step: 'plan' })
+      onToolStart({ name: 'calculator' })
+      onToolStart({ name: 'knowledge_search' })
+    })
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    await modeButton(wrapper, 'Agent').trigger('click')
+    await send(wrapper, 'use tools')
+
+    const assistantMessages = wrapper.findAllComponents({ name: 'AssistantMessage' })
+    expect(assistantMessages).toHaveLength(1)
+    expect(assistantMessages[0].props('message')).toMatchObject({
+      agentStatus: 'using_tool',
+      activeTool: 'knowledge_search',
+    })
+  })
+
+  it('appends Agent deltas to the assistant content', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    streamAgent.mockImplementation(async ({ onDelta, onDone }) => {
+      onDelta({ content: 'Agent ' })
+      onDelta({ content: 'answer' })
+      onDone({ user_message_id: 10, assistant_message_id: 11, model: 'm' })
+    })
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    await modeButton(wrapper, 'Agent').trigger('click')
+    await send(wrapper, 'answer this')
+
+    expect(wrapper.findComponent({ name: 'AssistantMessage' }).props('message').content).toBe('Agent answer')
+  })
+
+  it('clears Agent status and active tool after done', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    streamAgent.mockImplementation(async ({ onAgentStep, onToolStart, onDone }) => {
+      onAgentStep({ step: 'plan' })
+      onToolStart({ name: 'calculator' })
+      onDone({ user_message_id: 10, assistant_message_id: 11, model: 'm' })
+    })
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    await modeButton(wrapper, 'Agent').trigger('click')
+    await send(wrapper, 'finish this')
+
+    expect(wrapper.findComponent({ name: 'AssistantMessage' }).props('message')).toMatchObject({
+      agentStatus: null,
+      activeTool: null,
+    })
   })
 
   it('stores streaming sources and delta on the assistant message', async () => {
@@ -437,13 +543,73 @@ describe('ChatView', () => {
     expect(wrapper.find('.composer-input').exists()).toBe(true)
   })
 
-  it('renders the RAG toggle in the mobile composer', async () => {
+  it('stops an Agent stream and ignores later deltas', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    let abortStream
+    let callbacks
+    vi.stubGlobal(
+      'AbortController',
+      class {
+        constructor() {
+          this.signal = {}
+        }
+
+        abort() {
+          abortStream()
+        }
+      },
+    )
+    streamAgent.mockImplementation((handlers) => new Promise((resolve) => {
+      callbacks = handlers
+      abortStream = () => {
+        handlers.onError({ type: 'abort' })
+        resolve()
+      }
+    }))
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    await modeButton(wrapper, 'Agent').trigger('click')
+    await send(wrapper, 'stop this')
+    await wrapper.find('.send-btn.stop').trigger('click')
+    await flushPromises()
+    callbacks.onDelta({ content: 'late delta' })
+    await flushPromises()
+
+    expect(wrapper.find('.stopped-hint').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('late delta')
+  })
+
+  it('retries a failed Agent request through streamAgent', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    streamAgent
+      .mockImplementationOnce(async ({ onError }) => {
+        onError({ type: 'stream', code: 'upstream_error' })
+      })
+      .mockImplementationOnce(async ({ onDone }) => {
+        onDone({ user_message_id: 10, assistant_message_id: 11, model: 'm' })
+      })
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    await modeButton(wrapper, 'Agent').trigger('click')
+    await send(wrapper, 'retry agent')
+    await wrapper.find('.retry-btn').trigger('click')
+    await flushPromises()
+
+    expect(streamAgent).toHaveBeenCalledTimes(2)
+    expect(streamChat).not.toHaveBeenCalled()
+  })
+
+  it('renders the mode selector in the mobile composer', async () => {
     listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
     listMessages.mockResolvedValue([])
     const wrapper = await mountChat()
     await openFirstConversation(wrapper)
 
-    expect(wrapper.find('.rag-toggle').exists()).toBe(true)
+    expect(wrapper.find('.composer .mode-selector').exists()).toBe(true)
   })
 
   it('opens the conversation operation menu', async () => {

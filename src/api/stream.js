@@ -12,6 +12,9 @@ async function streamRequest({
   body,
   signal,
   onStart,
+  onAgentStep,
+  onToolStart,
+  onToolResult,
   onDelta,
   onSources,
   onDone,
@@ -63,6 +66,15 @@ async function streamRequest({
       case 'start':
         onStart?.(event.data)
         break
+      case 'agent_step':
+        onAgentStep?.(event.data)
+        break
+      case 'tool_start':
+        onToolStart?.(event.data)
+        break
+      case 'tool_result':
+        onToolResult?.(event.data)
+        break
       case 'delta':
         onDelta?.(event.data)
         break
@@ -108,6 +120,33 @@ async function streamRequest({
       onError?.({ type: 'network', message: '流传输中断' })
     }
   }
+}
+
+export function streamAgent({
+  conversationId,
+  content,
+  signal,
+  onStart,
+  onAgentStep,
+  onToolStart,
+  onToolResult,
+  onDelta,
+  onDone,
+  onError,
+}) {
+  return streamRequest({
+    conversationId,
+    path: 'agent/stream',
+    body: { content },
+    signal,
+    onStart,
+    onAgentStep,
+    onToolStart,
+    onToolResult,
+    onDelta,
+    onDone,
+    onError,
+  })
 }
 
 export function streamChat({
