@@ -1,6 +1,8 @@
 <script setup>
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
+import BrandIdentity from '../components/BrandIdentity.vue'
+import ThemeToggle from '../components/ThemeToggle.vue'
 import { useAuthStore } from '../stores/auth'
 
 const router = useRouter()
@@ -32,15 +34,21 @@ async function handleSubmit() {
 
 <template>
   <div class="login-page">
+    <div class="login-theme-control">
+      <ThemeToggle />
+    </div>
     <form
       class="login-card"
       @submit.prevent="handleSubmit"
     >
+      <div class="brand">
+        <BrandIdentity />
+      </div>
       <h1 class="title">
         登录
       </h1>
       <p class="subtitle">
-        欢迎回到智行 AI
+        欢迎回到 Omnixa
       </p>
 
       <div class="field">
@@ -88,6 +96,13 @@ async function handleSubmit() {
       >
         {{ authStore.loading ? '登录中…' : '登录' }}
       </button>
+
+      <p class="auth-switch">
+        没有账号？
+        <RouterLink to="/register">
+          注册
+        </RouterLink>
+      </p>
     </form>
   </div>
 </template>
@@ -99,31 +114,45 @@ async function handleSubmit() {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background:
-    radial-gradient(60rem 30rem at 70% -10%, rgba(124, 58, 237, 0.12), transparent 60%),
-    radial-gradient(50rem 28rem at 15% 0%, rgba(79, 70, 229, 0.12), transparent 60%),
-    #ffffff;
-  color: #1a1a2e;
+  background: var(--color-bg);
+  color: var(--color-text-primary);
 }
 
 .login-card {
   width: min(400px, 100%);
   padding: 32px;
-  border-radius: 20px;
-  background: #fff;
-  border: 1px solid #eef0f4;
-  box-shadow: 0 24px 60px -24px rgba(30, 30, 60, 0.25);
+  border-radius: var(--radius-2xl);
+  background: var(--color-surface-elevated);
+  border: 1px solid var(--color-border-subtle);
+  box-shadow: var(--shadow-float);
 }
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-5);
+  color: var(--color-text-primary);
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.login-theme-control {
+  position: fixed;
+  top: var(--space-5);
+  right: var(--space-5);
+}
+
 
 .title {
   margin: 0 0 4px;
-  font-size: 28px;
+  font-size: var(--text-page-title);
   letter-spacing: -0.5px;
 }
 
 .subtitle {
   margin: 0 0 24px;
-  color: #6b7280;
+  color: var(--color-text-secondary);
   font-size: 14px;
 }
 
@@ -136,32 +165,32 @@ async function handleSubmit() {
 
 .label {
   font-size: 14px;
-  color: #374151;
+  color: var(--color-text-primary);
 }
 
 input {
   width: 100%;
   padding: 12px 14px;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  font-size: 15px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-size: var(--text-base);
   font-family: inherit;
   box-sizing: border-box;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  transition: border-color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
 }
 
-input:focus {
-  outline: none;
-  border-color: #4f46e5;
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
+input::placeholder {
+  color: var(--color-text-tertiary);
 }
 
 .error {
   margin: 0 0 16px;
   padding: 10px 12px;
-  border-radius: 10px;
-  background: #fef2f2;
-  color: #b91c1c;
+  border-radius: var(--radius-lg);
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
   font-size: 14px;
 }
 
@@ -169,22 +198,39 @@ input:focus {
   width: 100%;
   padding: 13px;
   border: none;
-  border-radius: 12px;
-  background: linear-gradient(90deg, #4f46e5, #7c3aed);
-  color: #fff;
-  font-size: 16px;
+  border-radius: var(--radius-lg);
+  background: var(--color-action);
+  color: var(--color-action-text);
+  font-size: var(--text-md);
   font-family: inherit;
   cursor: pointer;
-  transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+  transition: transform var(--duration-fast) var(--ease-standard), background var(--duration-fast) var(--ease-standard), opacity var(--duration-fast) var(--ease-standard);
 }
 
 .submit:hover:not(:disabled) {
   transform: translateY(-2px);
-  box-shadow: 0 16px 32px -8px rgba(79, 70, 229, 0.6);
+  background: var(--color-action-hover);
 }
 
 .submit:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.auth-switch {
+  margin: 20px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  text-align: center;
+}
+
+.auth-switch a {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.auth-switch a:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }
 </style>

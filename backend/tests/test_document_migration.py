@@ -4,7 +4,7 @@ from pathlib import Path
 from app.models.document import Document, DocumentChunk
 
 
-def test_document_models_include_required_mysql_options_and_cascade_foreign_keys():
+def test_document_models_include_required_mysql_options_and_foreign_keys():
     assert Document.__table_args__["mysql_engine"] == "InnoDB"
     assert Document.__table_args__["mysql_charset"] == "utf8mb4"
     assert Document.__table_args__["mysql_collate"] == "utf8mb4_unicode_ci"
@@ -12,7 +12,11 @@ def test_document_models_include_required_mysql_options_and_cascade_foreign_keys
     assert chunk_options["mysql_engine"] == "InnoDB"
     assert chunk_options["mysql_charset"] == "utf8mb4"
     assert chunk_options["mysql_collate"] == "utf8mb4_unicode_ci"
-    assert next(iter(Document.__table__.foreign_keys)).ondelete == "CASCADE"
+    document_foreign_keys = {
+        foreign_key.column.table.name: foreign_key.ondelete
+        for foreign_key in Document.__table__.foreign_keys
+    }
+    assert document_foreign_keys == {"users": "CASCADE", "projects": "SET NULL"}
     assert next(iter(DocumentChunk.__table__.foreign_keys)).ondelete == "CASCADE"
     assert Document.status.default.arg == "queued"
     assert Document.processing_generation.default.arg == 0
@@ -88,4 +92,4 @@ def test_alembic_has_a_single_head():
         text=True,
     )
     lines = [line for line in result.stdout.splitlines() if line.strip()]
-    assert lines == ["b7c8d9e0f1a2 (head)"]
+    assert lines == ["d1e2f3a4b5c6 (head)"]

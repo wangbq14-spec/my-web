@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import agent, auth, conversations, documents, retrieval
+from app.api.routes import agent, auth, conversations, documents, projects, retrieval
 
 api_router = APIRouter()
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
@@ -9,4 +9,5 @@ api_router.include_router(
 )
 api_router.include_router(agent.router, prefix="/conversations", tags=["agent"])
 api_router.include_router(documents.router, prefix="/documents", tags=["documents"])
+api_router.include_router(projects.router, prefix="/projects", tags=["projects"])
 api_router.include_router(retrieval.router, prefix="/retrieval", tags=["retrieval"])

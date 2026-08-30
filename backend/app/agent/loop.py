@@ -12,6 +12,7 @@ from app.llm.base import LLMMessage, LLMProvider
 from app.models.message import Message
 from app.models.user import utcnow_naive
 from app.services.conversation import get_conversation
+from app.services.project import build_project_system_prompt
 from app.services.title import maybe_auto_title
 
 
@@ -76,6 +77,10 @@ def run_agent(
         .all()
     )
     messages = [LLMMessage(role=message.role, content=message.content) for message in history]
+    if (system_prompt := build_project_system_prompt(
+        conversation.project.instructions if conversation.project else None
+    )) is not None:
+        messages = [LLMMessage(role="system", content=system_prompt)] + messages
     tools = registry.to_llm_schema()
 
     for step in range(1, max_steps + 1):
@@ -113,7 +118,11 @@ def run_agent(
                     try:
                         result = tool.execute(
                             args,
-                            ToolContext(user_id=user_id, session=session),
+                            ToolContext(
+                                user_id=user_id,
+                                session=session,
+                                project_id=conversation.project_id,
+                            ),
                         )
                     except Exception:
                         result = ToolResult(

@@ -1,9 +1,124 @@
 :root {
-  --sans: system-ui, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  /* Light: restrained, neutral surfaces with Omnixa orange used only as an accent. */
+  color-scheme: light;
+  --color-bg: #ffffff;
+  --color-surface: #ffffff;
+  --color-surface-elevated: #ffffff;
+  --color-surface-hover: #f5f5f5;
+  --color-surface-sunken: #f7f7f8;
+  --color-text-primary: #171717;
+  --color-text-secondary: #6b6b6b;
+  --color-text-tertiary: #949494;
+  --color-border-subtle: rgba(0, 0, 0, 0.08);
+  --color-border: rgba(0, 0, 0, 0.12);
+  --color-border-strong: rgba(0, 0, 0, 0.2);
+  --color-glass-border: rgba(0, 0, 0, 0.1);
+  --color-accent: #e96a22;
+  --color-accent-hover: #c95316;
+  --color-accent-soft: #fff0e8;
+  --color-accent-active: #ffd9c2;
+  --color-focus-ring: rgba(233, 106, 34, 0.58);
+  --color-secondary-identity: #242424;
+  --color-action: #242424;
+  --color-action-hover: #000000;
+  --color-action-text: #ffffff;
+  --color-user-message: #f2f2f2;
+  --color-danger: #c52d20;
+  --color-danger-soft: #fff0ee;
+  --color-success: #15803d;
+  --color-success-soft: #f0fdf4;
+  --color-warning: #b45309;
+
+  /* Typography */
+  --font-sans: system-ui, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-base: 15px;
+  --text-md: 16px;
+  --text-lg: 18px;
+  --text-xl: 24px;
+  --text-2xl: 32px;
+  --text-display: 32px;
+  --text-page-title: 24px;
+  --text-section-title: 18px;
+
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 32px;
+  --space-9: 36px;
+  --space-10: 40px;
+  --space-11: 44px;
+  --space-12: 48px;
+  --space-13: 56px;
+  --space-14: 72px;
+
+  /* Radius */
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-2xl: 24px;
+  --radius-3xl: 28px;
+  --radius-pill: 999px;
+
+  /* Elevation */
+  --shadow-float: 0 10px 28px rgba(0, 0, 0, 0.06);
+  --shadow-overlay: 0 18px 50px rgba(0, 0, 0, 0.16);
+  --shadow-composer: 0 1px 2px rgba(0, 0, 0, 0.03), 0 10px 30px rgba(0, 0, 0, 0.05);
+
+  /* Motion */
+  --duration-fast: 120ms;
+  --duration-normal: 180ms;
+  --duration-slow: 220ms;
+  --ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --color-bg: #212121;
+  --color-surface: #2a2a2a;
+  --color-surface-elevated: #303030;
+  --color-surface-hover: #383838;
+  --color-surface-sunken: #181818;
+  --color-text-primary: #f1f1f1;
+  --color-text-secondary: #b4b4b4;
+  --color-text-tertiary: #858585;
+  --color-border-subtle: rgba(255, 255, 255, 0.09);
+  --color-border: rgba(255, 255, 255, 0.14);
+  --color-border-strong: rgba(255, 255, 255, 0.24);
+  --color-glass-border: rgba(255, 255, 255, 0.14);
+  --color-accent: #ff8a4c;
+  --color-accent-hover: #ffa16e;
+  --color-accent-soft: rgba(255, 138, 76, 0.14);
+  --color-accent-active: rgba(255, 138, 76, 0.24);
+  --color-focus-ring: rgba(255, 151, 98, 0.7);
+  --color-secondary-identity: #f1f1f1;
+  --color-action: #f1f1f1;
+  --color-action-hover: #ffffff;
+  --color-action-text: #1f1f1f;
+  --color-user-message: #303030;
+  --color-danger: #ff8278;
+  --color-danger-soft: rgba(255, 91, 82, 0.14);
+  --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.24);
+  --shadow-overlay: 0 22px 60px rgba(0, 0, 0, 0.42);
+  --shadow-composer: 0 1px 2px rgba(0, 0, 0, 0.22), 0 12px 34px rgba(0, 0, 0, 0.24);
 }
 
 * {
   box-sizing: border-box;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
 }
 
 html,
@@ -13,14 +128,37 @@ body {
 }
 
 body {
-  font-family: var(--sans);
+  font-family: var(--font-sans);
   line-height: 1.6;
-  color: #1a1a2e;
-  background: #ffffff;
+  color: var(--color-text-primary);
+  background: var(--color-bg);
+  transition: background-color var(--duration-normal) var(--ease-standard), color var(--duration-normal) var(--ease-standard);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 #app {
   min-height: 100vh;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    scroll-behavior: auto !important;
+    transition: none !important;
+  }
 }

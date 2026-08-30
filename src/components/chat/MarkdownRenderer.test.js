@@ -59,6 +59,8 @@ describe('MarkdownRenderer', () => {
   it('fenced code block', () => {
     const wrapper = render('```python\nprint(1)\n```')
     expect(wrapper.find('.code-block pre code').text()).toContain('print(1)')
+    expect(wrapper.find('.code-block-surface').exists()).toBe(true)
+    expect(wrapper.find('.code-block-radius-lg').exists()).toBe(true)
   })
 
   it('language label', () => {
@@ -69,6 +71,8 @@ describe('MarkdownRenderer', () => {
   it('copy button', () => {
     const wrapper = render('```python\nprint(1)\n```')
     expect(wrapper.find('.code-copy').exists()).toBe(true)
+    expect(wrapper.find('.code-copy-touch-target').exists()).toBe(true)
+    expect(wrapper.find('.code-copy-radius-sm').exists()).toBe(true)
   })
 
   it('clipboard copy', async () => {
@@ -85,7 +89,7 @@ describe('MarkdownRenderer', () => {
     expect(writeText).toHaveBeenCalledWith('print("hello")')
   })
 
-  it('Copied 状态', async () => {
+  it('已复制 状态', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', {
       value: { writeText },
@@ -96,13 +100,34 @@ describe('MarkdownRenderer', () => {
     await wrapper.find('.code-copy').trigger('click')
     await flushPromises()
 
-    expect(wrapper.find('.code-copy').text()).toBe('Copied')
+    expect(wrapper.find('.code-copy').text()).toBe('已复制')
   })
 
-  it('table', () => {
+  it('announces successful code copies in a polite live region', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    })
+    const wrapper = render('```\ncode\n```')
+
+    await wrapper.find('.code-copy').trigger('click')
+    await flushPromises()
+
+    const status = wrapper.find('.code-copy-status')
+    expect(status.attributes('role')).toBe('status')
+    expect(status.attributes('aria-live')).toBe('polite')
+    expect(status.text()).toBe('代码已复制')
+  })
+
+  it('table is wrapped in a focusable horizontal scroller', () => {
     const wrapper = render('| a | b |\n| - | - |\n| 1 | 2 |')
     expect(wrapper.find('table').exists()).toBe(true)
     expect(wrapper.findAll('th').length).toBe(2)
+    expect(wrapper.find('.table-scroll').attributes('role')).toBe('region')
+    expect(wrapper.find('.table-scroll').attributes('tabindex')).toBe('0')
+    expect(wrapper.find('.table-scroll').attributes('aria-label')).toBe('表格，可横向滚动')
+    expect(wrapper.find('.table-scroll-hint').text()).toBe('可横向滚动')
   })
 
   it('link target=_blank', () => {
@@ -147,9 +172,18 @@ describe('MarkdownRenderer', () => {
     expect(wrapper.find('strong').text()).toBe('加粗')
   })
 
-  it('emoji 正常', () => {
-    const wrapper = render('👍🎉')
-    expect(wrapper.text()).toContain('👍🎉')
+  it('preserves neutral Chinese text without emoji content', () => {
+    const wrapper = render('你好世界')
+    expect(wrapper.text()).toContain('你好世界')
+    expect(wrapper.text()).not.toMatch(/[\u{1F300}-\u{1FAFF}]/u)
+  })
+
+  it('removes emoji from rendered conversation content', () => {
+    const wrapper = render('🏢 企业知识库\n\n⚠️ 检索质量不稳定')
+
+    expect(wrapper.text()).toContain('企业知识库')
+    expect(wrapper.text()).toContain('检索质量不稳定')
+    expect(wrapper.text()).not.toMatch(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u)
   })
 
   it('unknown language fallback', () => {

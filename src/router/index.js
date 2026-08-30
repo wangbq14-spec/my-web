@@ -3,9 +3,12 @@ import pinia from '../stores'
 import { useAuthStore } from '../stores/auth'
 import HomeView from '../views/HomeView.vue'
 import LoginView from '../views/LoginView.vue'
+import RegisterView from '../views/RegisterView.vue'
 import DashboardView from '../views/DashboardView.vue'
 import ChatView from '../views/ChatView.vue'
 import KnowledgeView from '../views/KnowledgeView.vue'
+import ProjectsView from '../views/ProjectsView.vue'
+import ProjectDetailView from '../views/ProjectDetailView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -19,6 +22,11 @@ const router = createRouter({
       path: '/login',
       name: 'login',
       component: LoginView,
+    },
+    {
+      path: '/register',
+      name: 'register',
+      component: RegisterView,
     },
     {
       path: '/dashboard',
@@ -38,6 +46,18 @@ const router = createRouter({
       component: KnowledgeView,
       meta: { requiresAuth: true },
     },
+    {
+      path: '/projects',
+      name: 'projects',
+      component: ProjectsView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/projects/:id',
+      name: 'project-detail',
+      component: ProjectDetailView,
+      meta: { requiresAuth: true },
+    },
   ],
 })
 
@@ -51,7 +71,7 @@ router.beforeEach((to) => {
     }
   }
 
-  if (to.name === 'login' && authStore.isAuthenticated) {
+  if ((to.name === 'login' || to.name === 'register') && authStore.isAuthenticated) {
     return { name: 'chat' }
   }
 

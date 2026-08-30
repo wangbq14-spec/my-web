@@ -60,7 +60,7 @@ test('document upload polls to ready and retries a failed document', async ({ pa
 
   await page.goto('/knowledge')
   await expect(page.getByText('failed.txt')).toBeVisible()
-  await expect(page.locator('.retry-btn')).toHaveText('Retry')
+  await expect(page.locator('.retry-btn')).toHaveText('重新处理')
 
   await page.locator('input[type="file"]').setInputFiles({
     name: 'queued.txt',

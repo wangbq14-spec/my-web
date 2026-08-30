@@ -1,10 +1,14 @@
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 from app.models.user import utcnow_naive
+
+if TYPE_CHECKING:
+    from app.models.project import Project
 
 
 class Document(Base):
@@ -20,6 +24,11 @@ class Document(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         index=True,
         nullable=False,
+    )
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
     )
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -45,6 +54,8 @@ class Document(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow_naive, onupdate=utcnow_naive, nullable=False
     )
+
+    project: Mapped["Project | None"] = relationship(back_populates="documents")
 
 
 class DocumentChunk(Base):

@@ -10,6 +10,7 @@ const routerMock = vi.hoisted(() => ({
   replace: vi.fn(),
   push: vi.fn(),
 }))
+const routeMock = vi.hoisted(() => ({ path: '/chat', query: {} }))
 
 vi.mock('../api/modules/conversation', () => ({
   listConversations: vi.fn(),
@@ -19,6 +20,12 @@ vi.mock('../api/modules/conversation', () => ({
 }))
 vi.mock('../api/modules/message', () => ({
   listMessages: vi.fn(),
+}))
+vi.mock('../api/modules/document', () => ({
+  listDocuments: vi.fn(),
+}))
+vi.mock('../api/modules/project', () => ({
+  listProjects: vi.fn(),
 }))
 vi.mock('../api/stream', () => ({
   streamAgent: vi.fn(),
@@ -30,6 +37,7 @@ vi.mock('../stores/auth', () => ({
 }))
 vi.mock('vue-router', () => ({
   useRouter: () => routerMock,
+  useRoute: () => routeMock,
 }))
 
 import {
@@ -39,6 +47,8 @@ import {
   updateConversation,
 } from '../api/modules/conversation'
 import { listMessages } from '../api/modules/message'
+import { listDocuments } from '../api/modules/document'
+import { listProjects } from '../api/modules/project'
 import { streamAgent, streamChat, streamRegenerate } from '../api/stream'
 
 async function mountChat() {
@@ -58,8 +68,14 @@ async function send(wrapper, text) {
   await flushPromises()
 }
 
-function modeButton(wrapper, label) {
-  return wrapper.findAll('.mode-btn').find((button) => button.text() === label)
+async function chooseCapability(wrapper, mode) {
+  await wrapper.find('.capability-trigger').trigger('click')
+  await wrapper.find(`.capability-option[data-mode="${mode}"]`).trigger('click')
+}
+
+async function openCapabilityPopover(wrapper) {
+  await wrapper.find('.capability-trigger').trigger('click')
+  return wrapper.find('.capability-popover')
 }
 
 function deferred() {
@@ -77,6 +93,10 @@ describe('ChatView', () => {
     vi.clearAllMocks()
     vi.unstubAllGlobals()
     authStore.user = { username: 'alice' }
+    routeMock.path = '/chat'
+    routeMock.query = {}
+    listDocuments.mockResolvedValue([])
+    listProjects.mockResolvedValue([])
   })
 
   it('侧边栏显示退出登录按钮', async () => {
@@ -86,14 +106,14 @@ describe('ChatView', () => {
     expect(wrapper.find('.logout-btn').text()).toBe('退出登录')
   })
 
-  it('点击退出登录会清理认证状态并跳转登录页', async () => {
+  it('点击退出登录会清理认证状态并返回首页', async () => {
     listConversations.mockResolvedValue([])
     const wrapper = await mountChat()
 
     await wrapper.find('.logout-btn').trigger('click')
 
     expect(authStore.logout).toHaveBeenCalledTimes(1)
-    expect(routerMock.replace).toHaveBeenCalledWith('/login')
+    expect(routerMock.replace).toHaveBeenCalledWith('/')
   })
 
   it('退出登录按钮位于侧边栏内', async () => {
@@ -103,24 +123,115 @@ describe('ChatView', () => {
     expect(wrapper.find('.sidebar').find('.logout-btn').exists()).toBe(true)
   })
 
-  it('sidebar 显示知识库入口且点击跳转知识库', async () => {
+  it('sidebar 工作区只显示项目和知识库入口并跳转到对应路由', async () => {
     listConversations.mockResolvedValue([])
     const wrapper = await mountChat()
 
-    const knowledgeButton = wrapper.find('.sidebar .knowledge-nav-btn')
+    const workspaceNav = wrapper.get('.sidebar .workspace-nav')
+    const workspaceItems = workspaceNav.findAll('.workspace-nav-item')
+
+    expect(workspaceNav.text()).toContain('工作区')
+    expect(workspaceItems.map((item) => item.text())).toEqual(['项目', '知识库'])
+    expect(workspaceItems.every((item) => item.find('svg').exists())).toBe(true)
+    expect(workspaceNav.text()).not.toContain('对话')
+    expect(workspaceItems.some((item) => item.attributes('aria-current'))).toBe(false)
+
+    await workspaceItems[0].trigger('click')
+    await workspaceItems[1].trigger('click')
+
+    expect(routerMock.push).toHaveBeenNthCalledWith(1, '/projects')
+    expect(routerMock.push).toHaveBeenNthCalledWith(2, '/knowledge')
+  })
+
+  it('项目入口属于工作区导航而非底部小按钮', async () => {
+    listConversations.mockResolvedValue([])
+    const wrapper = await mountChat()
+
+    expect(wrapper.get('.workspace-project-nav').text()).toContain('项目')
+    expect(wrapper.find('.sidebar-footer .workspace-project-nav').exists()).toBe(false)
+    expect(wrapper.find('.sidebar-footer .project-nav-btn').exists()).toBe(false)
+  })
+
+  it('底部显示当前用户、主题切换和退出登录', async () => {
+    listConversations.mockResolvedValue([])
+    const wrapper = await mountChat()
+
+    const footer = wrapper.get('.sidebar-footer')
+    expect(footer.get('.footer-username').text()).toBe('alice')
+    expect(footer.find('.theme-toggle').exists()).toBe(true)
+    expect(footer.get('.logout-btn').text()).toBe('退出登录')
+  })
+
+  it('sidebar 工作区显示知识库入口且点击跳转知识库', async () => {
+    listConversations.mockResolvedValue([])
+    const wrapper = await mountChat()
+
+    const knowledgeButton = wrapper.findAll('.sidebar .workspace-nav-item')[1]
     expect(knowledgeButton.text()).toBe('知识库')
     await knowledgeButton.trigger('click')
 
     expect(routerMock.push).toHaveBeenCalledWith('/knowledge')
   })
 
-  it('移动端抽屉 sidebar 内同样显示知识库入口', async () => {
+  it('sidebar 工作区显示项目入口并跳转到项目列表', async () => {
+    listConversations.mockResolvedValue([])
+    const wrapper = await mountChat()
+
+    const projectButton = wrapper.find('.sidebar .workspace-project-nav')
+    expect(projectButton.text()).toContain('项目')
+    expect(projectButton.find('svg').exists()).toBe(true)
+    await projectButton.trigger('click')
+
+    expect(routerMock.push).toHaveBeenCalledWith('/projects')
+  })
+
+  it('shows a restrained project context bar for /chat?project_id=', async () => {
+    routeMock.query = { project_id: '7' }
+    listConversations.mockResolvedValue([])
+    listProjects.mockResolvedValue([{ id: 7, name: '产品发布', last_activity_at: '2026-08-30T09:00:00Z' }])
+    const wrapper = await mountChat()
+
+    expect(wrapper.get('.project-context-bar').text()).toContain('当前项目：产品发布')
+    await wrapper.get('.project-context-bar button').trigger('click')
+    expect(routerMock.push).toHaveBeenCalledWith({ name: 'project-detail', params: { id: '7' } })
+  })
+
+  it('creates a conversation under the active project context', async () => {
+    routeMock.query = { project_id: '7' }
+    listConversations.mockResolvedValue([])
+    createConversation.mockResolvedValue({ id: 12, project_id: 7, title: '新对话' })
+    const wrapper = await mountChat()
+
+    await wrapper.get('.new-btn').trigger('click')
+    expect(createConversation).toHaveBeenCalledWith({ title: '新对话', project_id: '7' })
+  })
+
+  it('shows at most three recent projects in the sidebar', async () => {
+    listConversations.mockResolvedValue([])
+    listProjects.mockResolvedValue([1, 2, 3, 4].map((id) => ({ id, name: `项目 ${id}` })))
+    const wrapper = await mountChat()
+
+    expect(wrapper.findAll('.recent-project-link')).toHaveLength(3)
+    expect(wrapper.get('.more-projects-link').text()).toContain('更多')
+  })
+
+  it('opens the conversation requested by conversation_id in the route query', async () => {
+    routeMock.query = { conversation_id: '2' }
+    listConversations.mockResolvedValue([{ id: 2, title: '项目对话' }])
+    listMessages.mockResolvedValue([])
+
+    await mountChat()
+
+    expect(listMessages).toHaveBeenCalledWith(2)
+  })
+
+  it('移动端抽屉 sidebar 内同样显示工作区知识库入口', async () => {
     listConversations.mockResolvedValue([])
     const wrapper = await mountChat()
     await wrapper.find('.menu-btn').trigger('click')
 
     expect(wrapper.find('.sidebar').classes()).toContain('open')
-    expect(wrapper.find('.sidebar .knowledge-nav-btn').exists()).toBe(true)
+    expect(wrapper.findAll('.sidebar .workspace-nav-item')[1].text()).toBe('知识库')
   })
 
   it('加载 conversation list', async () => {
@@ -141,6 +252,16 @@ describe('ChatView', () => {
 
     expect(listMessages).toHaveBeenCalledWith(1)
     expect(wrapper.text()).toContain('历史消息')
+  })
+
+  it('normalizes null message content before rendering', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: '会话一' }])
+    listMessages.mockResolvedValue([{ id: 1, role: 'user', content: null }])
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+
+    expect(wrapper.find('.message.user .bubble').text()).toBe('')
   })
 
   it('send 后立即出现临时 user message 并调用 streamChat', async () => {
@@ -330,15 +451,72 @@ describe('ChatView', () => {
     expect(wrapper.find('.send-btn.stop').exists()).toBe(true)
   })
 
-  it('empty state 正常显示', async () => {
+  it('keeps the composer as one input surface with a separate control rail and icon-only stop morph', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    streamChat.mockImplementation(() => new Promise(() => {}))
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+
+    const composer = wrapper.find('.composer')
+    expect(composer.find('.composer-input').exists()).toBe(true)
+    expect(composer.find('.composer-control-rail').exists()).toBe(true)
+    expect(composer.find('.composer-control-rail .capability-trigger').exists()).toBe(true)
+    expect(wrapper.find('.composer-wrap').classes()).toContain('is-idle')
+    await send(wrapper, 'stream this')
+    expect(wrapper.find('.composer-wrap').classes()).toContain('is-conversation')
+    expect(composer.find('.send-btn.stop svg rect').exists()).toBe(true)
+    expect(composer.find('.send-btn.stop span').attributes('class')).toBeUndefined()
+  })
+
+  it('renders capability icons and a subtle active workspace row', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    const popover = await openCapabilityPopover(wrapper)
+
+    expect(popover.findAll('.capability-option .capability-icon')).toHaveLength(3)
+    expect(wrapper.find('.conversation-item.active').attributes('aria-current')).toBe('true')
+  })
+
+  it('renders the idle workbench as the primary entry with a centered composer and text-only prompts', async () => {
     listConversations.mockResolvedValue([{ id: 1, title: '会话一' }])
     listMessages.mockResolvedValue([])
 
     const wrapper = await mountChat()
     await openFirstConversation(wrapper)
 
-    expect(wrapper.text()).toContain('有什么可以帮你？')
-    expect(wrapper.findAll('.suggestion-card').length).toBe(4)
+    expect(wrapper.find('.idle-workbench').exists()).toBe(true)
+    expect(wrapper.find('.empty-mark').text()).toContain('Omnixa')
+    expect(wrapper.find('.idle-wordmark').text()).toBe('Omnixa')
+    expect(wrapper.find('.empty-mark').find('svg').exists()).toBe(false)
+    expect(wrapper.find('.empty-title').text()).toBe('今天想做些什么？')
+    expect(wrapper.find('.composer-wrap').classes()).toContain('is-idle')
+    expect(wrapper.find('.composer-wrap.is-idle .composer').exists()).toBe(true)
+    const prompts = wrapper.findAll('.suggestion-card')
+    expect(prompts).toHaveLength(4)
+    expect(wrapper.find('.empty-title').text()).not.toMatch(/\p{Extended_Pictographic}/u)
+    expect(prompts.map((prompt) => prompt.text()).join('')).not.toMatch(/\p{Extended_Pictographic}/u)
+  })
+
+  it('starts a conversation from the idle composer without swapping input components', async () => {
+    listConversations.mockResolvedValue([])
+    createConversation.mockResolvedValue({ id: 7, title: '新对话' })
+    streamChat.mockImplementation(async ({ onDone }) => {
+      onDone({ user_message_id: 10, assistant_message_id: 11, model: 'm' })
+    })
+
+    const wrapper = await mountChat()
+    const composer = wrapper.find('.composer')
+    await send(wrapper, '从这里开始')
+
+    expect(createConversation).toHaveBeenCalledWith({ title: '新对话' })
+    expect(wrapper.find('.composer').element).toBe(composer.element)
+    expect(wrapper.find('.composer-wrap').classes()).toContain('is-conversation')
+    expect(streamChat).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 7 }))
   })
 
   it('suggestion 点击可填充输入框', async () => {
@@ -411,14 +589,35 @@ describe('ChatView', () => {
     expect(wrapper.find('.sidebar').classes()).toContain('open')
   })
 
-  it('defaults to chat mode with 普通 active', async () => {
+  it('moves focus into the chat composer after selecting a drawer conversation', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({
+      matches: true,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })))
+    listConversations.mockResolvedValue([{ id: 1, title: '会话一' }])
+    listMessages.mockResolvedValue([])
+    const wrapper = mount(ChatView, { attachTo: document.body })
+    await flushPromises()
+
+    await wrapper.find('.menu-btn').trigger('click')
+    await wrapper.find('.conversation-item').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.sidebar').classes()).not.toContain('open')
+    expect(document.activeElement).toBe(wrapper.find('.composer-input').element)
+    wrapper.unmount()
+  })
+
+  it('defaults to the 智能对话 capability', async () => {
     listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
     listMessages.mockResolvedValue([])
     const wrapper = await mountChat()
     await openFirstConversation(wrapper)
 
-    expect(modeButton(wrapper, '普通').classes()).toContain('active')
-    expect(modeButton(wrapper, '普通').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.find('.capability-trigger').text()).toContain('智能对话')
+    const popover = await openCapabilityPopover(wrapper)
+    expect(popover.find('.capability-option[data-mode="chat"]').attributes('aria-checked')).toBe('true')
   })
 
   it('switches to RAG mode and sends streamChat with useRag', async () => {
@@ -430,10 +629,10 @@ describe('ChatView', () => {
 
     const wrapper = await mountChat()
     await openFirstConversation(wrapper)
-    await modeButton(wrapper, '知识库').trigger('click')
+    await chooseCapability(wrapper, 'rag')
     await send(wrapper, 'retrieve this')
 
-    expect(modeButton(wrapper, '知识库').classes()).toContain('active')
+    expect(wrapper.find('.capability-trigger').text()).toContain('使用资料')
     expect(streamChat.mock.calls[0][0].useRag).toBe(true)
   })
 
@@ -443,10 +642,11 @@ describe('ChatView', () => {
     const wrapper = await mountChat()
     await openFirstConversation(wrapper)
 
-    await modeButton(wrapper, 'Agent').trigger('click')
+    await chooseCapability(wrapper, 'agent')
 
-    expect(modeButton(wrapper, 'Agent').classes()).toContain('active')
-    expect(modeButton(wrapper, 'Agent').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.find('.capability-trigger').text()).toContain('Agent')
+    const popover = await openCapabilityPopover(wrapper)
+    expect(popover.find('.capability-option[data-mode="agent"]').attributes('aria-checked')).toBe('true')
   })
 
   it('keeps exactly one mode active', async () => {
@@ -455,11 +655,145 @@ describe('ChatView', () => {
     const wrapper = await mountChat()
     await openFirstConversation(wrapper)
 
-    for (const label of ['知识库', 'Agent', '普通']) {
-      await modeButton(wrapper, label).trigger('click')
-      expect(wrapper.findAll('.mode-btn.active')).toHaveLength(1)
-      expect(modeButton(wrapper, label).classes()).toContain('active')
+    expect(getComputedStyle(wrapper.find('.composer').element).overflow).not.toBe('hidden')
+
+    for (const mode of ['rag', 'agent', 'chat']) {
+      await chooseCapability(wrapper, mode)
+      const popover = await openCapabilityPopover(wrapper)
+      expect(popover.findAll('.capability-option[aria-checked="true"]')).toHaveLength(1)
+      expect(popover.find(`.capability-option[data-mode="${mode}"]`).attributes('aria-checked')).toBe('true')
+      await wrapper.find('.capability-trigger').trigger('click')
     }
+  })
+
+  it('opens the capability menu with ArrowDown and focuses the current option', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    const wrapper = mount(ChatView, { attachTo: document.body })
+    await flushPromises()
+    await openFirstConversation(wrapper)
+
+    const trigger = wrapper.find('.capability-trigger')
+    await trigger.trigger('keydown', { key: 'ArrowDown' })
+    await flushPromises()
+
+    expect(wrapper.find('.capability-popover').exists()).toBe(true)
+    expect(document.activeElement).toBe(wrapper.find('.capability-option[data-mode="chat"]').element)
+    wrapper.unmount()
+  })
+
+  it('supports capability menu arrow navigation, Escape, outside close, and focus restoration', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    const wrapper = mount(ChatView, { attachTo: document.body })
+    await flushPromises()
+    await openFirstConversation(wrapper)
+
+    const trigger = wrapper.find('.capability-trigger')
+    await trigger.trigger('click')
+    await wrapper.find('.capability-option[data-mode="chat"]').trigger('keydown', { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(wrapper.find('.capability-option[data-mode="rag"]').element)
+    await wrapper.find('.capability-option[data-mode="rag"]').trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+    expect(wrapper.find('.capability-popover').exists()).toBe(false)
+    expect(document.activeElement).toBe(trigger.element)
+
+    await trigger.trigger('click')
+    document.body.dispatchEvent(new Event('click', { bubbles: true }))
+    await flushPromises()
+    expect(wrapper.find('.capability-popover').exists()).toBe(false)
+    expect(document.activeElement).toBe(trigger.element)
+    wrapper.unmount()
+  })
+
+  it('keeps a single trigger and exposes each capability placeholder and helper contract', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+
+    expect(wrapper.findAll('.capability-trigger')).toHaveLength(1)
+    expect(wrapper.findAll('.capability-option')).toHaveLength(0)
+    const contracts = {
+      chat: ['问任何问题', '提问、写作、分析，直接对话协作'],
+      rag: ['就你的资料提问', '从已添加资料中查找依据，并标出来源'],
+      agent: ['描述目标', '把目标拆成步骤，汇总可执行建议'],
+    }
+    for (const [nextMode, [placeholder, helper]] of Object.entries(contracts)) {
+      await chooseCapability(wrapper, nextMode)
+      expect(wrapper.find('.composer-input').attributes('placeholder')).toContain(placeholder)
+      expect(wrapper.find('.composer-helper').text()).toContain(helper)
+    }
+
+    const popover = await openCapabilityPopover(wrapper)
+    expect(popover.findAll('.capability-option')).toHaveLength(3)
+    expect(popover.findAll('[role="menuitemradio"]')).toHaveLength(3)
+  })
+
+  it('uses a valid route mode and removes it from the URL', async () => {
+    routeMock.query = { mode: 'rag' }
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+
+    expect(wrapper.find('.capability-trigger').text()).toContain('使用资料')
+    expect(routerMock.replace).toHaveBeenCalledWith({ query: {} })
+  })
+
+  it('changes empty-state suggestions by capability and keeps suggestions as fill-only actions', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+
+    await chooseCapability(wrapper, 'rag')
+    expect(wrapper.findAll('.suggestion-card').map((card) => card.text())).toEqual([
+      '基于资料总结',
+      '对比资料中的方案',
+    ])
+    expect(wrapper.find('.empty-knowledge-link').text()).toBe('前往添加资料')
+    await wrapper.findAll('.suggestion-card')[0].trigger('click')
+    expect(wrapper.find('.composer-input').element.value).toBe('基于资料总结')
+    expect(streamChat).not.toHaveBeenCalled()
+
+    await chooseCapability(wrapper, 'agent')
+    expect(wrapper.findAll('.suggestion-card').map((card) => card.text())).toEqual([
+      '比较方案并给出下一步',
+      '把目标拆成可执行步骤',
+    ])
+  })
+
+  it('uses an inward-breathing composer state and leaves it off while typing', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })))
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    const composer = wrapper.find('.composer')
+    expect(composer.classes()).toContain('inward-breathing')
+    expect(wrapper.find('.composer-wrap').classes()).toContain('is-idle')
+    await wrapper.find('.composer-input').setValue('draft')
+    expect(composer.classes()).not.toContain('inward-breathing')
+  })
+
+  it('turns off the inward-breathing state when reduced motion is preferred', async () => {
+    vi.stubGlobal('matchMedia', vi.fn((query) => ({
+      matches: query.includes('prefers-reduced-motion'),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })))
+    listConversations.mockResolvedValue([])
+
+    const wrapper = await mountChat()
+
+    expect(wrapper.find('.composer').classes()).not.toContain('inward-breathing')
   })
 
   it('sends in Agent mode through streamAgent without streamChat', async () => {
@@ -471,7 +805,7 @@ describe('ChatView', () => {
 
     const wrapper = await mountChat()
     await openFirstConversation(wrapper)
-    await modeButton(wrapper, 'Agent').trigger('click')
+    await chooseCapability(wrapper, 'agent')
     await send(wrapper, 'act on this')
 
     expect(streamAgent).toHaveBeenCalledWith(expect.objectContaining({ content: 'act on this' }))
@@ -489,7 +823,7 @@ describe('ChatView', () => {
 
     const wrapper = await mountChat()
     await openFirstConversation(wrapper)
-    await modeButton(wrapper, 'Agent').trigger('click')
+    await chooseCapability(wrapper, 'agent')
     await send(wrapper, 'use tools')
 
     const assistantMessages = wrapper.findAllComponents({ name: 'AssistantMessage' })
@@ -497,6 +831,25 @@ describe('ChatView', () => {
     expect(assistantMessages[0].props('message')).toMatchObject({
       agentStatus: 'using_tool',
       activeTool: 'knowledge_search',
+    })
+  })
+
+  it('clears Agent status and active tool as soon as a tool result arrives', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    streamAgent.mockImplementation(async ({ onToolStart, onToolResult }) => {
+      onToolStart({ name: 'calculator' })
+      onToolResult({ name: 'calculator' })
+    })
+
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    await chooseCapability(wrapper, 'agent')
+    await send(wrapper, 'use tools')
+
+    expect(wrapper.findComponent({ name: 'AssistantMessage' }).props('message')).toMatchObject({
+      agentStatus: null,
+      activeTool: null,
     })
   })
 
@@ -511,7 +864,7 @@ describe('ChatView', () => {
 
     const wrapper = await mountChat()
     await openFirstConversation(wrapper)
-    await modeButton(wrapper, 'Agent').trigger('click')
+    await chooseCapability(wrapper, 'agent')
     await send(wrapper, 'answer this')
 
     expect(wrapper.findComponent({ name: 'AssistantMessage' }).props('message').content).toBe('Agent answer')
@@ -528,7 +881,7 @@ describe('ChatView', () => {
 
     const wrapper = await mountChat()
     await openFirstConversation(wrapper)
-    await modeButton(wrapper, 'Agent').trigger('click')
+    await chooseCapability(wrapper, 'agent')
     await send(wrapper, 'finish this')
 
     expect(wrapper.findComponent({ name: 'AssistantMessage' }).props('message')).toMatchObject({
@@ -557,6 +910,7 @@ describe('ChatView', () => {
     expect(assistant.props('message').sources).toEqual([
       expect.objectContaining({ filename: 'handbook.pdf', chunk_index: 3 }),
     ])
+    await wrapper.find('.sources-toggle').trigger('click')
     expect(wrapper.find('.sources').text()).toContain('handbook.pdf')
   })
 
@@ -602,7 +956,7 @@ describe('ChatView', () => {
 
     const wrapper = await mountChat()
     await openFirstConversation(wrapper)
-    await modeButton(wrapper, 'Agent').trigger('click')
+    await chooseCapability(wrapper, 'agent')
     await send(wrapper, 'stop this')
     await wrapper.find('.send-btn.stop').trigger('click')
     await flushPromises()
@@ -626,7 +980,7 @@ describe('ChatView', () => {
 
     const wrapper = await mountChat()
     await openFirstConversation(wrapper)
-    await modeButton(wrapper, 'Agent').trigger('click')
+    await chooseCapability(wrapper, 'agent')
     await send(wrapper, 'retry agent')
     await wrapper.find('.retry-btn').trigger('click')
     await flushPromises()
@@ -635,13 +989,55 @@ describe('ChatView', () => {
     expect(streamChat).not.toHaveBeenCalled()
   })
 
-  it('renders the mode selector in the mobile composer', async () => {
+  it('renders the capability trigger in the mobile composer', async () => {
     listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
     listMessages.mockResolvedValue([])
     const wrapper = await mountChat()
     await openFirstConversation(wrapper)
 
-    expect(wrapper.find('.composer .mode-selector').exists()).toBe(true)
+    expect(wrapper.find('.composer .capability-trigger').exists()).toBe(true)
+  })
+
+  it('keeps the helper and renders the bottom-sheet capability shell on mobile', async () => {
+    vi.stubGlobal('matchMedia', vi.fn((query) => ({
+      matches: query.includes('max-width: 768px') || query.includes('prefers-reduced-motion'),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })))
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([])
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+
+    expect(wrapper.findAll('.capability-trigger')).toHaveLength(1)
+    expect(wrapper.find('.composer-helper').text()).toContain('提问、写作、分析，直接对话协作')
+    await wrapper.find('.capability-trigger').trigger('click')
+    expect(wrapper.find('.capability-popover-shell').exists()).toBe(true)
+  })
+
+  it('uses instant scrolling when reduced motion is preferred', async () => {
+    vi.stubGlobal('matchMedia', vi.fn((query) => ({
+      matches: query.includes('prefers-reduced-motion'),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })))
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    listMessages.mockResolvedValue([{ id: 1, role: 'assistant', content: 'Ready' }])
+    const wrapper = await mountChat()
+    await openFirstConversation(wrapper)
+    const messageList = wrapper.find('.messages')
+    Object.defineProperties(messageList.element, {
+      scrollHeight: { value: 500, configurable: true },
+      scrollTop: { value: 0, configurable: true },
+      clientHeight: { value: 100, configurable: true },
+    })
+    messageList.element.scrollTo = vi.fn()
+    await messageList.trigger('scroll')
+    await wrapper.find('.scroll-bottom-btn').trigger('click')
+
+    expect(messageList.element.scrollTo).toHaveBeenCalledWith(
+      expect.objectContaining({ behavior: 'auto' }),
+    )
   })
 
   it('opens the conversation operation menu', async () => {
@@ -995,6 +1391,20 @@ describe('ChatView', () => {
     expect(wrapper.find('.confirm-modal').exists()).toBe(false)
   })
 
+  it('restores focus to the more-actions button after closing the delete confirmation', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    const wrapper = mount(ChatView, { attachTo: document.body })
+    await flushPromises()
+    const moreButton = wrapper.find('.conversation-more')
+    await moreButton.trigger('click')
+    await wrapper.findAll('.conversation-menu button')[1].trigger('click')
+    await wrapper.find('.confirm-actions button').trigger('click')
+    await flushPromises()
+
+    expect(document.activeElement).toBe(moreButton.element)
+    wrapper.unmount()
+  })
+
   it('confirms deletion through deleteConversation', async () => {
     listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
     deleteConversation.mockResolvedValue()
@@ -1055,6 +1465,23 @@ describe('ChatView', () => {
 
     expect(wrapper.find('.sidebar').classes()).toContain('open')
     expect(wrapper.find('.conversation-menu').exists()).toBe(true)
+  })
+
+  it('opens the conversation menu upward when the list has less than 120px below the row', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: 'Conversation one' }])
+    const wrapper = await mountChat()
+    const row = wrapper.find('.conversation-row').element
+    const list = wrapper.find('.conversation-list').element
+    vi.spyOn(row, 'getBoundingClientRect').mockReturnValue({ bottom: 950 })
+    vi.spyOn(list, 'getBoundingClientRect').mockReturnValue({ bottom: 1000 })
+
+    await wrapper.find('.conversation-more').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.conversation-menu').classes()).toContain('menu-up')
+
+    await wrapper.find('.conversation-more').trigger('click')
+    expect(wrapper.find('.conversation-menu').exists()).toBe(false)
   })
 
   it('retries with the original content without adding optimistic messages', async () => {
@@ -1327,7 +1754,7 @@ describe('ChatView conversation management contract', () => {
     await flushPromises()
 
     expect(wrapper.find('.header-title').text()).toBe('新对话')
-    expect(wrapper.find('.composer-wrap').exists()).toBe(false)
+    expect(wrapper.find('.composer-wrap').classes()).toContain('is-idle')
   })
 
   it('renders conversations in descending updated_at order', async () => {

@@ -16,6 +16,7 @@ def create_document(
     original_filename: str,
     content_type: str | None,
     file_size: int,
+    project_id: int | None = None,
 ) -> Document:
     document = Document(
         user_id=user_id,
@@ -23,6 +24,7 @@ def create_document(
         original_filename=original_filename,
         content_type=content_type,
         file_size=file_size,
+        project_id=project_id,
         status="queued",
     )
     session.add(document)
@@ -53,6 +55,14 @@ def get_document(
             Document.deleted_at.is_(None),
         )
     )
+
+
+def update_document_project(
+    session: Session, *, document: Document, project_id: int | None
+) -> Document:
+    document.project_id = project_id
+    session.flush()
+    return document
 
 
 def delete_document_chunks(session: Session, *, document_id: int) -> None:

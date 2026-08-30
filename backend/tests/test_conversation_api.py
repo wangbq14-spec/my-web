@@ -37,6 +37,7 @@ def test_create_success(client):
     data = resp.json()
     assert data["title"] == "我的会话"
     assert data["model"] == "gpt-x"
+    assert data["project_id"] is None
     assert "id" in data
     assert "user_id" not in data
 

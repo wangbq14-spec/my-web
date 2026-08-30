@@ -41,6 +41,15 @@ describe('document API', () => {
     expect(options.headers['Content-Type']).toBe('multipart/form-data')
   })
 
+  it('associates an upload with a project when a project id is supplied', () => {
+    const file = new File(['content'], 'project-notes.txt', { type: 'text/plain' })
+
+    uploadDocument(file, 9)
+
+    const [, formData] = http.post.mock.calls[0]
+    expect(formData.get('project_id')).toBe('9')
+  })
+
   it('getDocument calls the document endpoint', () => {
     getDocument(7)
 

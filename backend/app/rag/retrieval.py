@@ -18,20 +18,32 @@ class RetrievedChunk:
 
 
 def retrieve(
-    session: Session, user_id: int, query: str, top_k: int = 5
+    session: Session,
+    user_id: int,
+    query: str,
+    top_k: int = 5,
+    project_id: int | None = None,
 ) -> list[RetrievedChunk]:
     embedding = get_embedding_provider().embed_query(query)
-    results = get_vector_store().search(user_id, embedding, top_k)
+    if project_id is None:
+        results = get_vector_store().search(user_id, embedding, top_k)
+    else:
+        results = get_vector_store().search(
+            user_id, embedding, top_k, project_id=project_id
+        )
     document_ids = {result.document_id for result in results}
     if not document_ids:
         return []
 
+    conditions = [
+        Document.id.in_(document_ids),
+        Document.user_id == user_id,
+        Document.deleted_at.is_(None),
+    ]
+    if project_id is not None:
+        conditions.append(Document.project_id == project_id)
     documents = session.execute(
-        select(Document.id, Document.original_filename).where(
-            Document.id.in_(document_ids),
-            Document.user_id == user_id,
-            Document.deleted_at.is_(None),
-        )
+        select(Document.id, Document.original_filename).where(*conditions)
     ).all()
     filenames = {document_id: filename for document_id, filename in documents}
     return [

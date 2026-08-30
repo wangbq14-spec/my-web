@@ -23,8 +23,13 @@ class LocalVectorStore(VectorStore):
         self._documents[(user_id, document_id)] = list(chunks)
 
     def search(
-        self, user_id: int, query_embedding: list[float], top_k: int
+        self,
+        user_id: int,
+        query_embedding: list[float],
+        top_k: int,
+        project_id: int | None = None,
     ) -> list[ScoredChunk]:
+        del project_id
         if top_k <= 0:
             return []
 

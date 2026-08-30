@@ -22,7 +22,16 @@ class KnowledgeSearchTool(Tool):
 
     def execute(self, args: KnowledgeSearchInput, context: ToolContext) -> ToolResult:
         try:
-            chunks = retrieve(context.session, context.user_id, args.query, args.top_k)
+            if context.project_id is None:
+                chunks = retrieve(context.session, context.user_id, args.query, args.top_k)
+            else:
+                chunks = retrieve(
+                    context.session,
+                    context.user_id,
+                    args.query,
+                    args.top_k,
+                    project_id=context.project_id,
+                )
         except EmbeddingError:
             return ToolResult(
                 success=False,

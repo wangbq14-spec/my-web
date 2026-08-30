@@ -68,14 +68,25 @@ describe('KnowledgeView', () => {
     listDocuments.mockImplementation(() => new Promise(() => {}))
     const wrapper = mount(KnowledgeView)
 
-    expect(wrapper.text()).toContain('加载中…')
+    expect(wrapper.text()).toContain('正在加载资料…')
   })
 
   it('shows the empty state when there are no documents', async () => {
     const wrapper = await mountKnowledge()
 
-    expect(wrapper.text()).toContain('知识库还是空的')
-    expect(wrapper.text()).toContain('知识库模式或 Agent')
+    expect(wrapper.text()).toContain('还没有添加资料')
+    expect(wrapper.text()).toContain('Chat 回答和 Agent 能力')
+  })
+
+  it('renders a document-led upload area with drag and file-choice guidance', async () => {
+    const wrapper = await mountKnowledge()
+    const uploadArea = wrapper.get('.upload-area')
+
+    expect(uploadArea.find('.upload-icon svg').exists()).toBe(true)
+    expect(uploadArea.get('h2').text()).toBe('添加资料')
+    expect(uploadArea.text()).toContain('拖拽文档到这里，或选择文件')
+    expect(uploadArea.get('.file-picker').text()).toBe('选择文件')
+    expect(uploadArea.text()).toContain('支持 TXT、Markdown、PDF，不超过 10 MB')
   })
 
   it('renders a ready document as available', async () => {
@@ -84,20 +95,40 @@ describe('KnowledgeView', () => {
 
     expect(wrapper.text()).toContain('handbook.pdf')
     expect(wrapper.text()).toContain('可用')
+    expect(wrapper.text()).toContain('AI 已可在回答中参考')
+  })
+
+  it('links users to Chat to use their materials', async () => {
+    const wrapper = await mountKnowledge()
+
+    await wrapper.find('.chat-link').trigger('click')
+
+    expect(routerMock.push).toHaveBeenCalledWith({ path: '/chat', query: { mode: 'rag' } })
+  })
+
+  it('provides direct Chat and project entries', async () => {
+    const wrapper = await mountKnowledge()
+
+    await wrapper.get('.back-chat-button').trigger('click')
+    expect(routerMock.push).toHaveBeenCalledWith('/chat')
+
+    await wrapper.get('.projects-button').trigger('click')
+    expect(routerMock.push).toHaveBeenLastCalledWith('/projects')
   })
 
   it('renders a processing document with text status', async () => {
     listDocuments.mockResolvedValue([{ ...readyDocument, status: 'processing' }])
     const wrapper = await mountKnowledge()
 
-    expect(wrapper.text()).toContain('处理中…')
+    expect(wrapper.text()).toContain('处理中')
+    expect(wrapper.text()).toContain('正在准备，完成后即可使用')
   })
 
   it('renders a queued document with text status', async () => {
     listDocuments.mockResolvedValue([queuedDocument])
     const wrapper = await mountKnowledge()
 
-    expect(wrapper.text()).toContain('排队中…')
+    expect(wrapper.text()).toContain('处理中')
   })
 
   it('starts polling queued and processing documents restored from the list', async () => {
@@ -174,7 +205,7 @@ describe('KnowledgeView', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('handbook.pdf')
-    expect(wrapper.find('.refresh-error-banner').text()).toContain('刷新失败，可重试')
+    expect(wrapper.find('.refresh-error-banner').text()).toContain('资料刷新失败')
   })
 
   it('does not let an older list response overwrite a newer refresh', async () => {
@@ -231,7 +262,7 @@ describe('KnowledgeView', () => {
     await wrapper.find('.upload-btn').trigger('click')
     await flushPromises()
     expect(getDocument).toHaveBeenCalledTimes(1)
-    expect(wrapper.text()).toContain('处理中…')
+    expect(wrapper.text()).toContain('处理中')
 
     await vi.advanceTimersByTimeAsync(2000)
     expect(getDocument).toHaveBeenCalledTimes(2)
@@ -251,7 +282,7 @@ describe('KnowledgeView', () => {
     await vi.advanceTimersByTimeAsync(30000)
 
     expect(getDocument).toHaveBeenCalledTimes(15)
-    expect(wrapper.text()).toContain('仍在处理中，可刷新查看最新状态')
+    expect(wrapper.text()).toContain('仍在准备中，完成后会自动更新；你也可以刷新查看最新状态')
     wrapper.unmount()
   })
 
@@ -262,16 +293,16 @@ describe('KnowledgeView', () => {
     const wrapper = await mountKnowledge()
 
     await vi.advanceTimersByTimeAsync(30000)
-    expect(wrapper.text()).toContain('仍在处理中，可刷新查看最新状态')
+    expect(wrapper.text()).toContain('仍在准备中，完成后会自动更新；你也可以刷新查看最新状态')
 
     await wrapper.vm.$.setupState.loadDocuments()
 
     expect(getDocument).toHaveBeenCalledTimes(16)
-    expect(wrapper.text()).not.toContain('仍在处理中，可刷新查看最新状态')
+    expect(wrapper.text()).not.toContain('仍在准备中，完成后会自动更新；你也可以刷新查看最新状态')
     wrapper.unmount()
   })
 
-  it('stops polling on failure and shows Retry', async () => {
+  it('stops polling on failure and shows reprocess action', async () => {
     vi.useFakeTimers()
     uploadDocument.mockResolvedValue(queuedDocument)
     getDocument.mockResolvedValue({ ...queuedDocument, status: 'failed', error_message: null })
@@ -281,13 +312,13 @@ describe('KnowledgeView', () => {
     await wrapper.find('.upload-btn').trigger('click')
     await flushPromises()
 
-    expect(wrapper.find('.retry-btn').text()).toBe('Retry')
+    expect(wrapper.find('.retry-btn').text()).toBe('重新处理')
     await vi.advanceTimersByTimeAsync(4000)
     expect(getDocument).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
 
-  it('requeues a failed document and resumes polling after Retry', async () => {
+  it('requeues a failed document and resumes polling after reprocessing', async () => {
     vi.useFakeTimers()
     listDocuments.mockResolvedValue([{ ...queuedDocument, status: 'failed' }])
     const pendingPoll = deferred()
@@ -298,7 +329,7 @@ describe('KnowledgeView', () => {
     await wrapper.find('.retry-btn').trigger('click')
     await flushPromises()
     expect(retryDocument).toHaveBeenCalledWith(1)
-    expect(wrapper.text()).toContain('排队中…')
+    expect(wrapper.text()).toContain('处理中')
     expect(getDocument).toHaveBeenCalledTimes(1)
 
     pendingPoll.resolve({ ...queuedDocument, status: 'processing' })
@@ -362,7 +393,7 @@ describe('KnowledgeView', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('可用')
-    expect(wrapper.text()).not.toContain('处理中…')
+    expect(wrapper.text()).not.toContain('处理中')
     wrapper.unmount()
   })
 
@@ -428,7 +459,7 @@ describe('KnowledgeView', () => {
     expect(wrapper.text()).toContain('drop.md')
   })
 
-  it('focuses the cancel button and restores focus after Escape', async () => {
+  it('traps focus in the delete dialog and restores it after Escape', async () => {
     listDocuments.mockResolvedValue([readyDocument])
     const wrapper = mount(KnowledgeView, { attachTo: document.body })
     await flushPromises()
@@ -438,10 +469,20 @@ describe('KnowledgeView', () => {
     await flushPromises()
     expect(document.activeElement).toBe(wrapper.find('.confirm-actions button').element)
     expect(wrapper.get('[role="dialog"]').attributes('aria-describedby')).toBe('delete-document-dialog-description')
+    expect(wrapper.find('.knowledge-header').element.parentElement.inert).toBe(true)
+
+    const cancelButton = wrapper.find('.confirm-actions button')
+    const confirmButton = wrapper.find('.confirm-actions .danger')
+    confirmButton.element.focus()
+    await confirmButton.trigger('keydown', { key: 'Tab' })
+    expect(document.activeElement).toBe(cancelButton.element)
+    await cancelButton.trigger('keydown', { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(confirmButton.element)
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await flushPromises()
     expect(wrapper.find('.confirm-modal').exists()).toBe(false)
+    expect(wrapper.find('.knowledge-header').element.parentElement.inert).toBe(false)
     expect(document.activeElement).toBe(deleteButton.element)
     wrapper.unmount()
   })
@@ -457,7 +498,7 @@ describe('KnowledgeView', () => {
 
     expect(deleteDocument).toHaveBeenCalledWith(1)
     expect(listDocuments).toHaveBeenCalledTimes(2)
-    expect(wrapper.text()).toContain('知识库还是空的')
+    expect(wrapper.text()).toContain('还没有添加资料')
   })
 
   it('moves focus to the back button when the deleted trigger no longer exists', async () => {
@@ -471,7 +512,7 @@ describe('KnowledgeView', () => {
     await flushPromises()
 
     expect(wrapper.find('.delete-btn').exists()).toBe(false)
-    expect(document.activeElement).toBe(wrapper.find('.back-btn').element)
+    expect(document.activeElement).toBe(wrapper.find('.back-chat-button').element)
     wrapper.unmount()
   })
 

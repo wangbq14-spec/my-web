@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from app.llm.base import LLMError, LLMResponse, LLMTimeoutError, LLMUpstreamError
 from app.models.message import Message
+from app.models.project import Project
 from app.models.user import User
 from app.schemas.conversation import ConversationCreate
 from app.services import chat
@@ -104,6 +105,23 @@ def test_multiturn_role_order(db, fake_provider):
 
     roles = [m.role for m in fake_provider.calls[0]["messages"]]
     assert roles == ["user", "assistant", "user"]
+
+
+def test_project_instructions_are_appended_as_a_system_message(db, fake_provider):
+    user_id = _create_user(db, "alice")
+    project = Project(user_id=user_id, name="project", instructions="be concise")
+    db.add(project)
+    db.flush()
+    conversation = create_conversation(
+        db, user_id, ConversationCreate(title="c1", project_id=project.id)
+    )
+
+    send_chat_message(db, user_id, conversation.id, "hello")
+
+    messages = fake_provider.calls[0]["messages"]
+    assert messages[0].role == "system"
+    assert "[项目指令]\nbe concise" in messages[0].content
+    assert messages[-1].content == "hello"
 
 
 def test_cannot_chat_on_other_users_conversation(db, fake_provider):

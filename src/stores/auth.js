@@ -39,6 +39,14 @@ export const useAuthStore = defineStore('auth', {
       }
     },
 
+    async register(payload) {
+      await authApi.register(payload)
+      return this.login({
+        username: payload.username,
+        password: payload.password,
+      })
+    },
+
     async fetchCurrentUser() {
       try {
         const user = await authApi.getCurrentUser()

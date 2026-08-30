@@ -65,6 +65,7 @@ def test_upload_is_accepted_queued_and_enqueued(client, fake_document_dispatcher
     assert txt.json()["original_filename"] == "notes.txt"
     assert txt.json()["filename"].endswith(".txt")
     assert txt.json()["content_type"] == "text/plain"
+    assert txt.json()["project_id"] is None
     assert markdown.json()["content_type"] == "text/markdown"
     assert "user_id" not in txt.json()
     assert fake_document_dispatcher.enqueued_ids == [txt.json()["id"], markdown.json()["id"]]

@@ -26,6 +26,7 @@ class ToolContext:
 
     user_id: int
     session: Session
+    project_id: int | None = None
 
 
 class Tool(ABC):

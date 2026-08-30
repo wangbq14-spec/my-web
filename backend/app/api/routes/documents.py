@@ -2,7 +2,8 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -14,6 +15,7 @@ from app.models.user import User
 from app.rag.storage import StorageSecurityError, delete_upload, save_upload
 from app.schemas.document import DocumentOut
 from app.services import document as document_service
+from app.services import project as project_service
 from app.services.document_tasks import (
     get_document_task_dispatcher,
     mark_document_task_dispatched,
@@ -29,6 +31,12 @@ _CONTENT_TYPES = {
     ".pdf": "application/pdf",
 }
 _READ_CHUNK_BYTES = 64 * 1024
+
+
+class DocumentProjectUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: int | None
 
 
 def _log_document_route_event(
@@ -54,6 +62,7 @@ def _not_found() -> HTTPException:
 @router.post("", response_model=DocumentOut, status_code=status.HTTP_202_ACCEPTED)
 def upload_document(
     file: UploadFile = File(...),
+    project_id: int | None = Form(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Document:
@@ -81,6 +90,11 @@ def upload_document(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="\u6587\u4ef6\u4e3a\u7a7a"
         )
 
+    if project_id is not None and project_service.get_project(
+        db, current_user, project_id
+    ) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="椤圭洰涓嶅瓨鍦?")
+
     try:
         filename = save_upload(b"".join(parts), suffix)
     except OSError as exc:
@@ -96,7 +110,10 @@ def upload_document(
             original_filename=original_filename,
             content_type=_CONTENT_TYPES[suffix],
             file_size=file_size,
+            project_id=project_id,
         )
+        if project_id is not None:
+            project_service.touch_project_activity(db, project_id)
         db.commit()
     except SQLAlchemyError as exc:
         _log_document_route_event(
@@ -154,6 +171,36 @@ def get_user_document(
     )
     if document is None:
         raise _not_found()
+    return document
+
+
+@router.patch("/{document_id}", response_model=DocumentOut)
+def update_document_project(
+    document_id: int,
+    data: DocumentProjectUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Document:
+    document = document_service.get_document(
+        db, user_id=current_user.id, document_id=document_id
+    )
+    if document is None:
+        raise _not_found()
+    if data.project_id is not None and project_service.get_project(
+        db, current_user, data.project_id
+    ) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目不存在")
+    try:
+        document_service.update_document_project(
+            db, document=document, project_id=data.project_id
+        )
+        db.commit()
+        db.refresh(document)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="文档更新失败"
+        ) from exc
     return document
 
 

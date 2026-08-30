@@ -30,7 +30,11 @@ class VectorStore(ABC):
 
     @abstractmethod
     def search(
-        self, user_id: int, query_embedding: list[float], top_k: int
+        self,
+        user_id: int,
+        query_embedding: list[float],
+        top_k: int,
+        project_id: int | None = None,
     ) -> list[ScoredChunk]:
         raise NotImplementedError
 

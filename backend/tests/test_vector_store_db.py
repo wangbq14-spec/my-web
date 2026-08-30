@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy.orm import sessionmaker
 
 from app.models.document import Document, DocumentChunk
+from app.models.project import Project
 from app.models.user import User
 from app.rag import retrieval
 from app.rag.vector_store.base import ChunkVector
@@ -225,6 +226,41 @@ def test_retrieve_keeps_filename_content_and_score_contract_with_db_store(db, mo
             score=1.0,
         )
     ]
+
+
+def test_retrieve_and_db_store_isolate_documents_by_project(db, monkeypatch):
+    user = _create_user(db, "alice")
+    project = Project(user_id=user.id, name="scoped")
+    db.add(project)
+    db.flush()
+    scoped = _create_document(db, user_id=user.id, filename="scoped.txt")
+    unscoped = _create_document(db, user_id=user.id, filename="other.txt")
+    scoped.project_id = project.id
+    db.commit()
+
+    store = DbVectorStore(_new_session_factory(db))
+    for document, content in ((scoped, "scoped"), (unscoped, "other")):
+        _begin_processing(db, document, 1)
+        store.upsert_chunks(
+            user.id,
+            document.id,
+            1,
+            [ChunkVector(chunk_index=0, content=content, embedding=[1.0, 0.0])],
+        )
+        _publish_ready(db, document, 1)
+
+    monkeypatch.setattr(retrieval, "get_embedding_provider", _FakeEmbeddingProvider)
+    monkeypatch.setattr(retrieval, "get_vector_store", lambda: store)
+    assert [
+        match.document_id
+        for match in store.search(user.id, [1.0, 0.0], 5, project_id=project.id)
+    ] == [scoped.id]
+    assert [
+        chunk.document_id
+        for chunk in retrieval.retrieve(
+            db, user.id, "find alpha", top_k=5, project_id=project.id
+        )
+    ] == [scoped.id]
 
 
 def test_db_store_rejects_soft_deleted_document_without_writing_chunks(db):

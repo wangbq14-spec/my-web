@@ -44,7 +44,7 @@ test('知识库可以上传并删除文档', async ({ page }) => {
   })
 
   await page.goto('/knowledge')
-  await expect(page.getByText('知识库还是空的')).toBeVisible()
+  await expect(page.getByText('还没有添加资料')).toBeVisible()
 
   await page.locator('input[type="file"]').setInputFiles({
     name: 'notes.txt',
@@ -60,5 +60,5 @@ test('知识库可以上传并删除文档', async ({ page }) => {
   await expect(page.getByRole('dialog')).toBeVisible()
   await page.getByRole('dialog').getByRole('button', { name: '删除', exact: true }).click()
 
-  await expect(page.getByText('知识库还是空的')).toBeVisible()
+  await expect(page.getByText('还没有添加资料')).toBeVisible()
 })

@@ -9,6 +9,7 @@ from app.models.message import Message
 from app.models.user import utcnow_naive
 
 if TYPE_CHECKING:
+    from app.models.project import Project
     from app.models.user import User
 
 
@@ -26,6 +27,11 @@ class Conversation(Base):
         index=True,
         nullable=False,
     )
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
     title: Mapped[str] = mapped_column(String(200), nullable=False, default="新对话")
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -36,6 +42,7 @@ class Conversation(Base):
     )
 
     user: Mapped["User"] = relationship(back_populates="conversations")
+    project: Mapped["Project | None"] = relationship(back_populates="conversations")
     messages: Mapped[list[Message]] = relationship(
         back_populates="conversation",
         cascade="all, delete-orphan",

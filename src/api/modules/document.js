@@ -16,9 +16,12 @@ export function deleteDocument(id) {
   return http.delete(`/documents/${id}`)
 }
 
-export function uploadDocument(file) {
+export function uploadDocument(file, projectId) {
   const formData = new FormData()
   formData.append('file', file)
+  if (projectId !== undefined && projectId !== null && projectId !== '') {
+    formData.append('project_id', String(projectId))
+  }
 
   return http.post('/documents', formData, {
     headers: {

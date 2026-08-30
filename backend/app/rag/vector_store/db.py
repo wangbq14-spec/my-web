@@ -75,13 +75,26 @@ class DbVectorStore(VectorStore):
             session.close()
 
     def search(
-        self, user_id: int, query_embedding: list[float], top_k: int
+        self,
+        user_id: int,
+        query_embedding: list[float],
+        top_k: int,
+        project_id: int | None = None,
     ) -> list[ScoredChunk]:
         if top_k <= 0:
             return []
 
         session = self._session_factory()
         try:
+            conditions = [
+                Document.user_id == user_id,
+                Document.status == "ready",
+                Document.deleted_at.is_(None),
+                DocumentChunk.generation == Document.active_generation,
+            ]
+            if project_id is not None:
+                conditions.append(Document.project_id == project_id)
+
             rows = session.execute(
                 select(
                     DocumentChunk.document_id,
@@ -90,12 +103,7 @@ class DbVectorStore(VectorStore):
                     DocumentChunk.embedding,
                 )
                 .join(Document, DocumentChunk.document_id == Document.id)
-                .where(
-                    Document.user_id == user_id,
-                    Document.status == "ready",
-                    Document.deleted_at.is_(None),
-                    DocumentChunk.generation == Document.active_generation,
-                )
+                .where(*conditions)
             ).all()
 
             matches: list[ScoredChunk] = []

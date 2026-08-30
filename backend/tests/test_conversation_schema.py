@@ -30,6 +30,7 @@ def test_conversation_out_from_orm_object():
         id=1,
         title="hello",
         model=None,
+        project_id=None,
         created_at=now,
         updated_at=now,
     )
@@ -39,6 +40,7 @@ def test_conversation_out_from_orm_object():
     assert out.id == 1
     assert out.title == "hello"
     assert out.model is None
+    assert out.project_id is None
     assert out.created_at == now
     assert out.updated_at == now
 

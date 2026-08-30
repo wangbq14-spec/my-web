@@ -12,6 +12,7 @@ from app.rag.context import Citation, build_citations, build_rag_system_prompt
 from app.rag.embeddings.base import EmbeddingError
 from app.rag.retrieval import retrieve
 from app.services.conversation import get_conversation
+from app.services.project import append_project_instructions, build_project_system_prompt
 from app.services.title import maybe_auto_title
 
 
@@ -57,11 +58,30 @@ def send_chat_message(
     llm_messages = [LLMMessage(role=m.role, content=m.content) for m in history]
     sources: list[Citation] = []
     if use_rag:
-        retrieved = retrieve(session, user_id, content, top_k)
+        if conversation.project_id is None:
+            retrieved = retrieve(session, user_id, content, top_k)
+        else:
+            retrieved = retrieve(
+                session,
+                user_id,
+                content,
+                top_k,
+                project_id=conversation.project_id,
+            )
         llm_messages = [
-            LLMMessage(role="system", content=build_rag_system_prompt(content, retrieved))
+            LLMMessage(
+                role="system",
+                content=append_project_instructions(
+                    build_rag_system_prompt(content, retrieved),
+                    conversation.project.instructions if conversation.project else None,
+                ),
+            )
         ] + llm_messages
         sources = build_citations(retrieved)
+    elif (system_prompt := build_project_system_prompt(
+        conversation.project.instructions if conversation.project else None
+    )) is not None:
+        llm_messages = [LLMMessage(role="system", content=system_prompt)] + llm_messages
 
     provider = get_llm_provider()
     response = provider.complete(llm_messages, model=conversation.model)
@@ -116,7 +136,16 @@ def stream_chat_message(
     citations: list[Citation] = []
     if use_rag:
         try:
-            retrieved = retrieve(session, user_id, content, top_k)
+            if conversation.project_id is None:
+                retrieved = retrieve(session, user_id, content, top_k)
+            else:
+                retrieved = retrieve(
+                    session,
+                    user_id,
+                    content,
+                    top_k,
+                    project_id=conversation.project_id,
+                )
         except EmbeddingError:
             yield StreamEvent(type="retrieval_error")
             return
@@ -145,8 +174,18 @@ def stream_chat_message(
     llm_messages = [LLMMessage(role=m.role, content=m.content) for m in history]
     if use_rag:
         llm_messages = [
-            LLMMessage(role="system", content=build_rag_system_prompt(content, retrieved))
+            LLMMessage(
+                role="system",
+                content=append_project_instructions(
+                    build_rag_system_prompt(content, retrieved),
+                    conversation.project.instructions if conversation.project else None,
+                ),
+            )
         ] + llm_messages
+    elif (system_prompt := build_project_system_prompt(
+        conversation.project.instructions if conversation.project else None
+    )) is not None:
+        llm_messages = [LLMMessage(role="system", content=system_prompt)] + llm_messages
 
     provider = get_llm_provider()
 

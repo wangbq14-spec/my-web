@@ -3,6 +3,8 @@ from itertools import chain
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.routes.auth import get_current_user
@@ -16,7 +18,7 @@ from app.llm.base import (
 from app.models.user import User
 from app.rag.embeddings.base import EmbeddingError
 from app.schemas.chat import ChatRequest, ChatResponse, CitationOut
-from app.schemas.conversation import ConversationCreate, ConversationOut, ConversationUpdate
+from app.schemas.conversation import ConversationCreate, ConversationOut
 from app.schemas.message import MessageCreate, MessageOut
 from app.services import chat as chat_service
 from app.services import conversation as conversation_service
@@ -25,29 +27,65 @@ from app.services import message as message_service
 router = APIRouter()
 
 
+class ConversationPatch(BaseModel):
+    """PATCH payload kept local until the shared schema is expanded."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    project_id: int | None = None
+
+    @model_validator(mode="after")
+    def validate_title(self) -> "ConversationPatch":
+        if "title" in self.model_fields_set and self.title is None:
+            raise ValueError("标题不能为空")
+        return self
+
+
+def _project_not_found() -> HTTPException:
+    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目不存在")
+
+
 @router.post("", response_model=ConversationOut, status_code=status.HTTP_201_CREATED)
 def create_conversation(
     data: ConversationCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ConversationOut:
-    conversation = conversation_service.create_conversation(
-        session=db,
-        user_id=current_user.id,
-        data=data,
-    )
-    db.commit()
+    try:
+        conversation = conversation_service.create_conversation(
+            session=db,
+            user_id=current_user.id,
+            data=data,
+        )
+        db.commit()
+        db.refresh(conversation)
+    except conversation_service.ProjectNotFoundError as exc:
+        db.rollback()
+        raise _project_not_found() from exc
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="会话创建失败"
+        ) from exc
     return conversation
 
 
 @router.get("", response_model=list[ConversationOut])
 def list_conversations(
+    project_id: int | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[ConversationOut]:
+    if project_id is not None:
+        from app.services import project as project_service
+
+        if project_service.get_project(db, current_user, project_id) is None:
+            raise _project_not_found()
     return conversation_service.list_conversations(
         session=db,
         user_id=current_user.id,
+        project_id=project_id,
     )
 
 
@@ -73,22 +111,37 @@ def get_conversation(
 @router.patch("/{conversation_id}", response_model=ConversationOut)
 def update_conversation(
     conversation_id: int,
-    data: ConversationUpdate,
+    data: ConversationPatch,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ConversationOut:
-    conversation = conversation_service.update_conversation(
-        session=db,
-        user_id=current_user.id,
-        conversation_id=conversation_id,
-        data=data,
-    )
-    if conversation is None:
+    if not data.model_fields_set:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="会话不存在",
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="至少提供一个要更新的字段",
         )
-    db.commit()
+    try:
+        conversation = conversation_service.update_conversation(
+            session=db,
+            user_id=current_user.id,
+            conversation_id=conversation_id,
+            data=data,
+        )
+        if conversation is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="会话不存在",
+            )
+        db.commit()
+        db.refresh(conversation)
+    except conversation_service.ProjectNotFoundError as exc:
+        db.rollback()
+        raise _project_not_found() from exc
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="会话更新失败"
+        ) from exc
     return conversation
 
 

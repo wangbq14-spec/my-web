@@ -10,6 +10,7 @@ from app.agent.registry import ToolRegistry
 from app.api.routes import agent as agent_route
 from app.llm.base import LLMError, LLMResponse, LLMToolCall
 from app.models.message import Message
+from app.models.project import Project
 from app.models.user import User
 from app.schemas.conversation import ConversationCreate
 from app.services.conversation import create_conversation
@@ -84,6 +85,24 @@ def test_agent_no_tool_direct_final(db):
 
     assert [event.type for event in events] == ["agent_step", "delta", "done"]
     assert events[-1].model == "fake-model"
+
+
+def test_agent_project_instructions_are_injected_before_user_message(db):
+    user_id = _create_user(db)
+    project = Project(user_id=user_id, name="project", instructions="use bullets")
+    db.add(project)
+    db.flush()
+    conversation = create_conversation(
+        db, user_id, ConversationCreate(title="agent", project_id=project.id)
+    )
+    provider = FakeProvider([LLMResponse(content="final")])
+
+    list(run_agent(db, user_id, conversation.id, "hello", _registry(), provider, None, 2))
+
+    messages = provider.calls[0]["messages"]
+    assert messages[0].role == "system"
+    assert "[项目指令]\nuse bullets" in messages[0].content
+    assert messages[-1].content == "hello"
 
 
 def test_agent_single_tool_then_final(db):

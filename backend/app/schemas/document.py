@@ -7,6 +7,7 @@ class DocumentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
     id: int
+    project_id: int | None
     filename: str
     original_filename: str
     content_type: str | None
