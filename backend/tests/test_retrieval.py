@@ -1,9 +1,10 @@
 import pytest
+from sqlalchemy.orm import sessionmaker
 
 from app.api.routes import documents
 from app.models.document import Document
 from app.rag import retrieval
-from app.rag.vector_store.base import ChunkVector
+from app.rag.vector_store.base import ChunkVector, ScoredChunk
 from app.rag.vector_store.local import LocalVectorStore
 from app.services.document_tasks import FakeDocumentTaskDispatcher
 
@@ -26,9 +27,10 @@ class FakeEmbeddingProvider:
 
 
 @pytest.fixture()
-def fake_rag(monkeypatch):
+def fake_rag(db, monkeypatch):
     provider = FakeEmbeddingProvider()
-    store = LocalVectorStore()
+    sessions = sessionmaker(bind=db.get_bind(), autocommit=False, autoflush=False)
+    store = LocalVectorStore(sessions)
     monkeypatch.setattr(retrieval, "get_embedding_provider", lambda: provider)
     monkeypatch.setattr(retrieval, "get_vector_store", lambda: store)
     return store
@@ -122,6 +124,68 @@ def test_retrieval_top_k_limits_results(client, db, fake_rag):
     assert response.json()[0]["content"] == "alpha"
 
 
+def test_retrieval_filters_unavailable_documents_before_top_k(client, db, fake_rag):
+    token = _register_and_login(client, "alice")
+    ready = db.get(Document, _upload(client, token, "ready.txt", b"beta").json()["id"])
+    queued = db.get(
+        Document, _upload(client, token, "queued.txt", b"alpha queued").json()["id"]
+    )
+    deleted = db.get(
+        Document, _upload(client, token, "deleted.txt", b"alpha deleted").json()["id"]
+    )
+    _index_ready_document(db, fake_rag, ready, "beta ready")
+    fake_rag.upsert_chunks(
+        queued.user_id,
+        queued.id,
+        1,
+        [ChunkVector(chunk_index=0, content="alpha queued", embedding=[1.0, 0.0])],
+    )
+    deleted.status = "ready"
+    deleted.deleted_at = deleted.updated_at
+    fake_rag.upsert_chunks(
+        deleted.user_id,
+        deleted.id,
+        1,
+        [ChunkVector(chunk_index=0, content="alpha deleted", embedding=[1.0, 0.0])],
+    )
+    db.commit()
+
+    response = client.post(
+        "/api/retrieval/search",
+        json={"query": "alpha", "top_k": 1},
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 200
+    assert [chunk["document_id"] for chunk in response.json()] == [ready.id]
+
+
+def test_retrieval_metadata_recheck_excludes_non_ready_document(
+    client, db, fake_rag, monkeypatch
+):
+    token = _register_and_login(client, "alice")
+    queued = db.get(
+        Document, _upload(client, token, "queued.txt", b"alpha queued").json()["id"]
+    )
+
+    class StaleStore:
+        def search(self, user_id, query_embedding, top_k, project_id=None):
+            return [
+                ScoredChunk(
+                    document_id=queued.id,
+                    chunk_index=0,
+                    content="alpha queued",
+                    score=1.0,
+                )
+            ]
+
+    monkeypatch.setattr(retrieval, "get_vector_store", StaleStore)
+
+    chunks = retrieval.retrieve(db, queued.user_id, "alpha", top_k=1)
+
+    assert chunks == []
+
+
 @pytest.mark.parametrize("payload", [{"query": ""}, {"query": "alpha", "top_k": 0}, {"query": "alpha", "top_k": 21}])
 def test_retrieval_validates_query_and_top_k(client, fake_rag, payload):
     token = _register_and_login(client, "alice")
@@ -142,3 +206,48 @@ def test_retrieval_does_not_return_other_users_documents(client, fake_rag):
 
     assert response.status_code == 200
     assert response.json() == []
+
+
+def test_project_retrieval_excludes_other_projects_and_users(
+    client, db, monkeypatch
+):
+    provider = FakeEmbeddingProvider()
+    sessions = sessionmaker(bind=db.get_bind(), autocommit=False, autoflush=False)
+    store = LocalVectorStore(sessions)
+    monkeypatch.setattr(retrieval, "get_embedding_provider", lambda: provider)
+    monkeypatch.setattr(retrieval, "get_vector_store", lambda: store)
+    alice = _register_and_login(client, "alice")
+    bob = _register_and_login(client, "bob")
+    project_a = client.post(
+        "/api/projects", json={"name": "project-a"}, headers=_auth(alice)
+    ).json()
+    project_b = client.post(
+        "/api/projects", json={"name": "project-b"}, headers=_auth(alice)
+    ).json()
+    bob_project = client.post(
+        "/api/projects", json={"name": "bob-project"}, headers=_auth(bob)
+    ).json()
+    document_a = db.get(Document, _upload(client, alice, "a.txt", b"alpha a").json()["id"])
+    document_b = db.get(Document, _upload(client, alice, "b.txt", b"alpha b").json()["id"])
+    document_bob = db.get(
+        Document, _upload(client, bob, "bob.txt", b"alpha private").json()["id"]
+    )
+    document_a.project_id = project_a["id"]
+    document_b.project_id = project_b["id"]
+    document_bob.project_id = bob_project["id"]
+    for document, content in [
+        (document_a, "alpha a"),
+        (document_b, "alpha b"),
+        (document_bob, "alpha private"),
+    ]:
+        _index_ready_document(db, store, document, content)
+
+    chunks = retrieval.retrieve(
+        db,
+        document_a.user_id,
+        "alpha",
+        top_k=5,
+        project_id=project_a["id"],
+    )
+
+    assert [chunk.document_id for chunk in chunks] == [document_a.id]

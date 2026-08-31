@@ -47,6 +47,7 @@ def to_project_out(project: Project) -> ProjectOut:
         name=project.name,
         description=project.description,
         instructions=project.instructions,
+        pinned=project.pinned,
         created_at=project.created_at,
         updated_at=project.updated_at,
         last_activity_at=project.last_activity_at,
@@ -62,7 +63,11 @@ def list_projects(session: Session, user: User) -> list[ProjectOut]:
         select(Project)
         .where(Project.user_id == user.id)
         .options(selectinload(Project.conversations), selectinload(Project.documents))
-        .order_by(Project.last_activity_at.desc(), Project.id.desc())
+        .order_by(
+            Project.pinned.desc(),
+            Project.last_activity_at.desc(),
+            Project.id.desc(),
+        )
     )
     return [to_project_out(project) for project in result.scalars().all()]
 
@@ -83,6 +88,8 @@ def update_project(session: Session, project: Project, data: ProjectUpdate) -> P
         project.description = data.description
     if "instructions" in fields:
         project.instructions = data.instructions
+    if "pinned" in fields:
+        project.pinned = data.pinned
     project.updated_at = utcnow_naive()
     touch_project_activity(session, project.id)
     session.flush()

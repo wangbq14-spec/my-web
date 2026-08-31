@@ -1,11 +1,12 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import BrandIdentity from '../components/BrandIdentity.vue'
 import ThemeToggle from '../components/ThemeToggle.vue'
 import { createProject, deleteProject, listProjects, updateProject } from '../api/modules/project'
 
 const router = useRouter()
+const route = useRoute()
 const projects = ref([])
 const loading = ref(true)
 const errorMessage = ref('')
@@ -15,6 +16,7 @@ const editorOpen = ref(false)
 const editingProject = ref(null)
 const form = ref({ name: '', description: '', instructions: '' })
 const saving = ref(false)
+const pinningProjectId = ref(null)
 const projectToDelete = ref(null)
 const deleting = ref(false)
 const formNameInput = ref(null)
@@ -58,6 +60,7 @@ function relativeActivity(value) {
 
 function sortByActivity(items) {
   return [...items].sort((left, right) => {
+    if (Boolean(left.pinned) !== Boolean(right.pinned)) return left.pinned ? -1 : 1
     const leftTime = Date.parse(left.last_activity_at || left.updated_at || left.created_at)
     const rightTime = Date.parse(right.last_activity_at || right.updated_at || right.created_at)
     return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0)
@@ -133,9 +136,11 @@ async function saveProject() {
   }
   saving.value = true
   errorMessage.value = ''
-  const data = { name }
-  if (form.value.description.trim()) data.description = form.value.description.trim()
-  if (form.value.instructions.trim()) data.instructions = form.value.instructions.trim()
+  const data = {
+    name,
+    description: form.value.description.trim(),
+    instructions: form.value.instructions.trim(),
+  }
   try {
     if (editingProject.value) await updateProject(editingProject.value.id, data)
     else await createProject(data)
@@ -145,6 +150,20 @@ async function saveProject() {
     if (mounted) errorMessage.value = editingProject.value ? '更新项目失败，请稍后重试' : '新建项目失败，请稍后重试'
   } finally {
     if (mounted) saving.value = false
+  }
+}
+
+async function togglePin(project) {
+  if (pinningProjectId.value !== null) return
+  pinningProjectId.value = project.id
+  errorMessage.value = ''
+  try {
+    await updateProject(project.id, { pinned: !project.pinned })
+    await loadProjects()
+  } catch {
+    if (mounted) errorMessage.value = '更新项目置顶状态失败，请稍后重试'
+  } finally {
+    if (mounted) pinningProjectId.value = null
   }
 }
 
@@ -176,7 +195,10 @@ watch(editorOpen, async (open) => {
   if (open) await nextTick()
 })
 
-onMounted(loadProjects)
+onMounted(async () => {
+  await loadProjects()
+  if (route.query.create === '1') focusQuickCreate()
+})
 onBeforeUnmount(() => { mounted = false })
 </script>
 
@@ -313,6 +335,16 @@ onBeforeUnmount(() => { mounted = false })
             >
               <button
                 type="button"
+                class="quiet-button pin-button"
+                :aria-label="project.pinned ? `取消置顶 ${project.name}` : `置顶 ${project.name}`"
+                :aria-pressed="Boolean(project.pinned)"
+                :disabled="pinningProjectId === project.id"
+                @click="togglePin(project)"
+              >
+                {{ project.pinned ? '取消置顶' : '置顶' }}
+              </button>
+              <button
+                type="button"
                 class="quiet-button"
                 @click="openRenameForm(project)"
               >
@@ -370,6 +402,16 @@ onBeforeUnmount(() => { mounted = false })
               <span>{{ project.conversation_count || 0 }} 会话</span><span>{{ project.document_count || 0 }} 资料</span><small>{{ relativeActivity(project.last_activity_at || project.updated_at) }}</small>
             </div>
             <div class="project-actions">
+              <button
+                type="button"
+                class="quiet-button pin-button"
+                :aria-label="project.pinned ? `取消置顶 ${project.name}` : `置顶 ${project.name}`"
+                :aria-pressed="Boolean(project.pinned)"
+                :disabled="pinningProjectId === project.id"
+                @click="togglePin(project)"
+              >
+                {{ project.pinned ? '取消置顶' : '置顶' }}
+              </button>
               <button
                 type="button"
                 class="quiet-button"
@@ -441,7 +483,7 @@ onBeforeUnmount(() => { mounted = false })
             rows="2"
             maxlength="500"
           /></label>
-          <label v-if="!editingProject">项目 Instructions<textarea
+          <label>项目 Instructions<textarea
             v-model="form.instructions"
             rows="5"
             maxlength="5000"

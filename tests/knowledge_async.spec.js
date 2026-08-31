@@ -18,6 +18,10 @@ test('document upload polls to ready and retries a failed document', async ({ pa
   await page.addInitScript(() => {
     localStorage.setItem('access_token', 'e2e-token')
   })
+  await page.route('**/api/auth/me', (route) => route.fulfill({
+    status: 200,
+    json: { id: 1, username: 'e2e-user', email: 'e2e@example.com' },
+  }))
   await page.route(/\/documents(?:\/\d+(?:\/retry)?)?$/, async (route) => {
     const request = route.request()
     const method = request.method()

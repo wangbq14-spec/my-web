@@ -16,6 +16,10 @@ async function mockConversations(page) {
   await page.addInitScript(() => {
     localStorage.setItem('access_token', 'e2e-token')
   })
+  await page.route('**/api/auth/me', (route) => route.fulfill({
+    status: 200,
+    json: { id: 1, username: 'e2e-user', email: 'e2e@example.com' },
+  }))
 
   await page.route('**/conversations**', async (route) => {
     const request = route.request()

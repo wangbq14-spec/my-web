@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from app.api.routes import documents
 from app.models.project import Project
 from app.services.document_tasks import FakeDocumentTaskDispatcher
@@ -54,6 +56,7 @@ def test_project_crud(client):
     assert project["name"] == "研究计划"
     assert project["description"] == "初始描述"
     assert project["instructions"] == "初始指令"
+    assert project["pinned"] is False
     assert "user_id" not in project
 
     listed = client.get("/api/projects", headers=_auth(token))
@@ -82,6 +85,15 @@ def test_project_crud(client):
     assert updated.json()["description"] == "新描述"
     assert updated.json()["instructions"] == "新指令"
 
+    pinned = client.patch(
+        f"/api/projects/{project['id']}",
+        json={"description": "", "pinned": True},
+        headers=_auth(token),
+    )
+    assert pinned.status_code == 200
+    assert pinned.json()["description"] == ""
+    assert pinned.json()["pinned"] is True
+
     deleted = client.delete(f"/api/projects/{project['id']}", headers=_auth(token))
     assert deleted.status_code == 204
     assert client.get(f"/api/projects/{project['id']}", headers=_auth(token)).status_code == 404
@@ -94,7 +106,7 @@ def test_project_ownership_is_hidden(client):
     path = f"/api/projects/{project['id']}"
 
     assert client.get(path, headers=_auth(bob)).status_code == 404
-    assert client.patch(path, json={"name": "无权"}, headers=_auth(bob)).status_code == 404
+    assert client.patch(path, json={"pinned": True}, headers=_auth(bob)).status_code == 404
     assert client.delete(path, headers=_auth(bob)).status_code == 404
 
 
@@ -168,6 +180,15 @@ def test_conversation_project_create_move_unassign_and_filter(client):
     assert created.status_code == 201
     conversation = created.json()
     assert conversation["project_id"] == project["id"]
+    assert conversation["pinned"] is False
+
+    pinned = client.patch(
+        f"/api/conversations/{conversation['id']}",
+        json={"pinned": True},
+        headers=_auth(token),
+    )
+    assert pinned.status_code == 200
+    assert pinned.json()["pinned"] is True
 
     filtered = client.get(
         f"/api/conversations?project_id={project['id']}", headers=_auth(token)
@@ -216,6 +237,11 @@ def test_project_assignment_rejects_another_users_project(client, monkeypatch):
         f"/api/conversations/{conversation['id']}",
         json={"project_id": bob_project["id"]},
         headers=_auth(alice),
+    ).status_code == 404
+    assert client.patch(
+        f"/api/conversations/{conversation['id']}",
+        json={"pinned": True},
+        headers=_auth(bob),
     ).status_code == 404
     assert client.patch(
         f"/api/documents/{document['id']}",
@@ -274,6 +300,20 @@ def test_project_activity_counts_sorting_and_document_upload(client, db, monkeyp
         first["id"],
     ]
 
+    pinned = client.patch(
+        f"/api/projects/{first['id']}",
+        json={"pinned": True},
+        headers=_auth(token),
+    )
+    assert pinned.status_code == 200
+    first_model = db.get(Project, first["id"])
+    first_model.last_activity_at = first_model.created_at.replace(year=2020)
+    db.commit()
+    assert [item["id"] for item in client.get("/api/projects", headers=_auth(token)).json()] == [
+        first["id"],
+        second["id"],
+    ]
+
     previous_activity = db.get(Project, first["id"]).last_activity_at
     conversation = client.post(
         "/api/conversations",
@@ -305,6 +345,55 @@ def test_project_activity_counts_sorting_and_document_upload(client, db, monkeyp
     )
     assert updated.status_code == 200
     assert updated.json()["last_activity_at"] != previous_activity
+
+
+def test_conversation_rename_move_and_delete_touch_affected_projects(client, db):
+    token = _register_and_login(client, "alice")
+    first = _create_project(client, token, name="first").json()
+    second = _create_project(client, token, name="second").json()
+    conversation = client.post(
+        "/api/conversations",
+        json={"title": "original", "project_id": first["id"]},
+        headers=_auth(token),
+    ).json()
+    old_activity = datetime(2020, 1, 1, 0, 0, 0)
+
+    first_model = db.get(Project, first["id"])
+    first_model.last_activity_at = old_activity
+    db.commit()
+    renamed = client.patch(
+        f"/api/conversations/{conversation['id']}",
+        json={"title": "renamed"},
+        headers=_auth(token),
+    )
+    assert renamed.status_code == 200
+    db.expire_all()
+    assert db.get(Project, first["id"]).last_activity_at > old_activity
+
+    first_model = db.get(Project, first["id"])
+    second_model = db.get(Project, second["id"])
+    first_model.last_activity_at = old_activity
+    second_model.last_activity_at = old_activity
+    db.commit()
+    moved = client.patch(
+        f"/api/conversations/{conversation['id']}",
+        json={"project_id": second["id"]},
+        headers=_auth(token),
+    )
+    assert moved.status_code == 200
+    db.expire_all()
+    assert db.get(Project, first["id"]).last_activity_at > old_activity
+    assert db.get(Project, second["id"]).last_activity_at > old_activity
+
+    second_model = db.get(Project, second["id"])
+    second_model.last_activity_at = old_activity
+    db.commit()
+    deleted = client.delete(
+        f"/api/conversations/{conversation['id']}", headers=_auth(token)
+    )
+    assert deleted.status_code == 204
+    db.expire_all()
+    assert db.get(Project, second["id"]).last_activity_at > old_activity
 
 
 def test_document_upload_rejects_another_users_project(client, monkeypatch):

@@ -12,7 +12,7 @@ from app.llm.base import LLMMessage, LLMProvider
 from app.models.message import Message
 from app.models.user import utcnow_naive
 from app.services.conversation import get_conversation
-from app.services.project import build_project_system_prompt
+from app.services.project import build_project_system_prompt, touch_project_activity
 from app.services.title import maybe_auto_title
 
 
@@ -167,6 +167,8 @@ def run_agent(
         conversation.updated_at = utcnow_naive()
         session.flush()
         maybe_auto_title(conversation, content)
+        if conversation.project_id is not None:
+            touch_project_activity(session, conversation.project_id)
         yield AgentEvent(
             type="done",
             user_message_id=user_message.id,

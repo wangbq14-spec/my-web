@@ -206,3 +206,21 @@ def test_conversation_updated_at_updated(db, fake_provider):
     send_chat_message(db, user_id, conv.id, "hi")
 
     assert conv.updated_at != datetime(2020, 1, 1, 0, 0, 0)
+
+
+def test_project_activity_updates_after_chat_round(db, fake_provider):
+    user_id = _create_user(db, "alice")
+    project = Project(user_id=user_id, name="project")
+    db.add(project)
+    db.flush()
+    conversation = create_conversation(
+        db, user_id, ConversationCreate(title="c1", project_id=project.id)
+    )
+    old_activity = datetime(2020, 1, 1, 0, 0, 0)
+    project.last_activity_at = old_activity
+    db.flush()
+
+    send_chat_message(db, user_id, conversation.id, "hello")
+
+    db.refresh(project)
+    assert project.last_activity_at > old_activity

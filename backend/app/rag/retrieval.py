@@ -38,6 +38,7 @@ def retrieve(
     conditions = [
         Document.id.in_(document_ids),
         Document.user_id == user_id,
+        Document.status == "ready",
         Document.deleted_at.is_(None),
     ]
     if project_id is not None:

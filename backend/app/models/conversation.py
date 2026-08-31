@@ -34,6 +34,9 @@ class Conversation(Base):
     )
     title: Mapped[str] = mapped_column(String(200), nullable=False, default="新对话")
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    pinned: Mapped[bool] = mapped_column(
+        default=False, nullable=False, server_default="0"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow_naive, nullable=False
     )

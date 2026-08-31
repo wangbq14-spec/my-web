@@ -92,4 +92,4 @@ def test_alembic_has_a_single_head():
         text=True,
     )
     lines = [line for line in result.stdout.splitlines() if line.strip()]
-    assert lines == ["d1e2f3a4b5c6 (head)"]
+    assert lines == ["e2f3a4b5c6d7 (head)"]

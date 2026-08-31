@@ -1,9 +1,8 @@
 import json
 from itertools import chain
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -18,28 +17,13 @@ from app.llm.base import (
 from app.models.user import User
 from app.rag.embeddings.base import EmbeddingError
 from app.schemas.chat import ChatRequest, ChatResponse, CitationOut
-from app.schemas.conversation import ConversationCreate, ConversationOut
+from app.schemas.conversation import ConversationCreate, ConversationOut, ConversationUpdate
 from app.schemas.message import MessageCreate, MessageOut
 from app.services import chat as chat_service
 from app.services import conversation as conversation_service
 from app.services import message as message_service
 
 router = APIRouter()
-
-
-class ConversationPatch(BaseModel):
-    """PATCH payload kept local until the shared schema is expanded."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    title: str | None = Field(default=None, min_length=1, max_length=200)
-    project_id: int | None = None
-
-    @model_validator(mode="after")
-    def validate_title(self) -> "ConversationPatch":
-        if "title" in self.model_fields_set and self.title is None:
-            raise ValueError("标题不能为空")
-        return self
 
 
 def _project_not_found() -> HTTPException:
@@ -111,7 +95,7 @@ def get_conversation(
 @router.patch("/{conversation_id}", response_model=ConversationOut)
 def update_conversation(
     conversation_id: int,
-    data: ConversationPatch,
+    data: ConversationUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ConversationOut:
@@ -132,6 +116,9 @@ def update_conversation(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="会话不存在",
             )
+        if "pinned" in data.model_fields_set:
+            conversation.pinned = data.pinned
+            db.flush()
         db.commit()
         db.refresh(conversation)
     except conversation_service.ProjectNotFoundError as exc:
@@ -385,6 +372,8 @@ def chat_stream(
 @router.post("/{conversation_id}/regenerate/stream")
 def regenerate_stream(
     conversation_id: int,
+    use_rag: bool = False,
+    top_k: int = Query(default=5, ge=1, le=20),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> StreamingResponse:
@@ -396,7 +385,13 @@ def regenerate_stream(
             detail="会话不存在",
         )
 
-    stream = chat_service.regenerate_chat_message(db, user_id, conversation_id)
+    stream = chat_service.regenerate_chat_message(
+        db,
+        user_id,
+        conversation_id,
+        use_rag=use_rag,
+        top_k=top_k,
+    )
     try:
         first_event = next(stream)
     except LLMError as exc:
@@ -411,6 +406,24 @@ def regenerate_stream(
             for event in chain((first_event,), stream):
                 if event.type == "delta":
                     yield _sse("delta", {"content": event.content})
+                elif event.type == "sources":
+                    yield _sse(
+                        "sources",
+                        {
+                            "sources": [
+                                CitationOut.model_validate(citation).model_dump()
+                                for citation in (event.sources or [])
+                            ]
+                        },
+                    )
+                elif event.type == "retrieval_error":
+                    yield _sse(
+                        "error",
+                        {
+                            "code": "retrieval_error",
+                            "message": "知识库检索失败，请稍后重试",
+                        },
+                    )
                 elif event.type == "done":
                     db.commit()
                     committed = True

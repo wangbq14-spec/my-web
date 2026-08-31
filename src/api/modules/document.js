@@ -16,6 +16,10 @@ export function deleteDocument(id) {
   return http.delete(`/documents/${id}`)
 }
 
+export function updateDocument(id, data) {
+  return http.patch(`/documents/${id}`, data)
+}
+
 export function uploadDocument(file, projectId) {
   const formData = new FormData()
   formData.append('file', file)

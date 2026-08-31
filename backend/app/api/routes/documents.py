@@ -93,7 +93,7 @@ def upload_document(
     if project_id is not None and project_service.get_project(
         db, current_user, project_id
     ) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="椤圭洰涓嶅瓨鍦?")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目不存在")
 
     try:
         filename = save_upload(b"".join(parts), suffix)

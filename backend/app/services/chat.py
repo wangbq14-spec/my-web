@@ -12,7 +12,12 @@ from app.rag.context import Citation, build_citations, build_rag_system_prompt
 from app.rag.embeddings.base import EmbeddingError
 from app.rag.retrieval import retrieve
 from app.services.conversation import get_conversation
-from app.services.project import append_project_instructions, build_project_system_prompt
+from app.services.project import (
+    _PROJECT_SYSTEM_SAFETY_PROMPT,
+    append_project_instructions,
+    build_project_system_prompt,
+    touch_project_activity,
+)
 from app.services.title import maybe_auto_title
 
 
@@ -21,6 +26,24 @@ class ChatResult:
     user_message: Message
     assistant_message: Message
     sources: list[Citation] = field(default_factory=list)
+
+
+def _retrieve_for_conversation(
+    session: Session,
+    user_id: int,
+    content: str,
+    top_k: int,
+    project_id: int | None,
+):
+    if project_id is None:
+        return retrieve(session, user_id, content, top_k)
+    return retrieve(session, user_id, content, top_k, project_id=project_id)
+
+
+def _build_rag_prompt(content: str, retrieved, project_instructions: str | None) -> str:
+    """Keep global safety ahead of RAG evidence and supplementary project rules."""
+    rag_prompt = f"{_PROJECT_SYSTEM_SAFETY_PROMPT}\n\n{build_rag_system_prompt(content, retrieved)}"
+    return append_project_instructions(rag_prompt, project_instructions)
 
 
 def send_chat_message(
@@ -58,21 +81,15 @@ def send_chat_message(
     llm_messages = [LLMMessage(role=m.role, content=m.content) for m in history]
     sources: list[Citation] = []
     if use_rag:
-        if conversation.project_id is None:
-            retrieved = retrieve(session, user_id, content, top_k)
-        else:
-            retrieved = retrieve(
-                session,
-                user_id,
-                content,
-                top_k,
-                project_id=conversation.project_id,
-            )
+        retrieved = _retrieve_for_conversation(
+            session, user_id, content, top_k, conversation.project_id
+        )
         llm_messages = [
             LLMMessage(
                 role="system",
-                content=append_project_instructions(
-                    build_rag_system_prompt(content, retrieved),
+                content=_build_rag_prompt(
+                    content,
+                    retrieved,
                     conversation.project.instructions if conversation.project else None,
                 ),
             )
@@ -99,6 +116,8 @@ def send_chat_message(
     conversation.updated_at = utcnow_naive()
     session.flush()
     maybe_auto_title(conversation, content)
+    if conversation.project_id is not None:
+        touch_project_activity(session, conversation.project_id)
 
     return ChatResult(
         user_message=user_message,
@@ -136,16 +155,9 @@ def stream_chat_message(
     citations: list[Citation] = []
     if use_rag:
         try:
-            if conversation.project_id is None:
-                retrieved = retrieve(session, user_id, content, top_k)
-            else:
-                retrieved = retrieve(
-                    session,
-                    user_id,
-                    content,
-                    top_k,
-                    project_id=conversation.project_id,
-                )
+            retrieved = _retrieve_for_conversation(
+                session, user_id, content, top_k, conversation.project_id
+            )
         except EmbeddingError:
             yield StreamEvent(type="retrieval_error")
             return
@@ -176,8 +188,9 @@ def stream_chat_message(
         llm_messages = [
             LLMMessage(
                 role="system",
-                content=append_project_instructions(
-                    build_rag_system_prompt(content, retrieved),
+                content=_build_rag_prompt(
+                    content,
+                    retrieved,
                     conversation.project.instructions if conversation.project else None,
                 ),
             )
@@ -218,6 +231,8 @@ def stream_chat_message(
     conversation.updated_at = utcnow_naive()
     session.flush()
     maybe_auto_title(conversation, content)
+    if conversation.project_id is not None:
+        touch_project_activity(session, conversation.project_id)
 
     yield StreamEvent(
         type="done",
@@ -231,6 +246,8 @@ def regenerate_chat_message(
     session: Session,
     user_id: int,
     conversation_id: int,
+    use_rag: bool = False,
+    top_k: int = 5,
 ) -> Iterator[StreamEvent]:
     conversation = get_conversation(session, user_id, conversation_id)
     if conversation is None:
@@ -256,6 +273,34 @@ def regenerate_chat_message(
 
     context = messages[: last_user_index + 1]
     llm_messages = [LLMMessage(role=message.role, content=message.content) for message in context]
+    last_user_content = context[-1].content
+    if use_rag:
+        try:
+            retrieved = _retrieve_for_conversation(
+                session,
+                user_id,
+                last_user_content,
+                top_k,
+                conversation.project_id,
+            )
+        except EmbeddingError:
+            yield StreamEvent(type="retrieval_error")
+            return
+        llm_messages = [
+            LLMMessage(
+                role="system",
+                content=_build_rag_prompt(
+                    last_user_content,
+                    retrieved,
+                    conversation.project.instructions if conversation.project else None,
+                ),
+            )
+        ] + llm_messages
+        yield StreamEvent(type="sources", sources=build_citations(retrieved))
+    elif (system_prompt := build_project_system_prompt(
+        conversation.project.instructions if conversation.project else None
+    )) is not None:
+        llm_messages = [LLMMessage(role="system", content=system_prompt)] + llm_messages
     provider = get_llm_provider()
 
     chunks: list[str] = []
@@ -283,6 +328,8 @@ def regenerate_chat_message(
 
     conversation.updated_at = utcnow_naive()
     session.flush()
+    if conversation.project_id is not None:
+        touch_project_activity(session, conversation.project_id)
 
     yield StreamEvent(
         type="done",

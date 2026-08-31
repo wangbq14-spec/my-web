@@ -129,6 +129,34 @@ def test_rag_chat_calls_retrieve_for_current_user_with_top_k(client, fake_provid
     assert fake_provider.complete_calls[0]["messages"][0].role == "system"
 
 
+def test_project_rag_prompt_orders_global_safety_rag_and_project_instructions(
+    client, fake_provider, monkeypatch
+):
+    monkeypatch.setattr(chat, "retrieve", lambda *_args, **_kwargs: _retrieved())
+    token = _register_and_login(client, "alice")
+    project = client.post(
+        "/api/projects",
+        json={"name": "project", "instructions": "PROJECT-INSTRUCTION-MARKER"},
+        headers=_auth(token),
+    ).json()
+    conversation_id = client.post(
+        "/api/conversations",
+        json={"title": "c1", "project_id": project["id"]},
+        headers=_auth(token),
+    ).json()["id"]
+
+    response = client.post(
+        f"/api/conversations/{conversation_id}/chat",
+        json={"content": "hello", "use_rag": True},
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 201
+    prompt = fake_provider.complete_calls[0]["messages"][0].content
+    assert prompt.index("Follow all system-level safety") < prompt.index("<retrieved_documents>")
+    assert prompt.index("<retrieved_documents>") < prompt.index("PROJECT-INSTRUCTION-MARKER")
+
+
 def test_rag_chat_top_k_defaults_and_validates_bounds(client, fake_provider, monkeypatch):
     observed = []
     monkeypatch.setattr(
@@ -284,14 +312,14 @@ def test_rag_stream_llm_error_rolls_back(client, db, fake_provider, monkeypatch)
     assert db.scalars(select(Message).where(Message.conversation_id == conversation_id)).all() == []
 
 
-def test_rag_stream_commits_only_on_done_and_regenerate_stays_non_rag():
+def test_rag_stream_commits_only_on_done_and_regenerate_supports_rag():
     stream_source = inspect.getsource(conversations.chat_stream)
     regenerate_source = inspect.getsource(chat.regenerate_chat_message)
 
     assert stream_source.count("db.commit()") == 1
     assert "finally:" in stream_source
     assert "db.rollback()" in stream_source
-    assert "retrieve(" not in regenerate_source
+    assert "_retrieve_for_conversation(" in regenerate_source
 
 
 def test_regular_stream_has_no_sources_event(client, fake_provider, monkeypatch):

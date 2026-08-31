@@ -7,6 +7,7 @@ from sqlalchemy import select
 from app.api.routes import conversations
 from app.llm.base import LLMChunk, LLMUpstreamError
 from app.models.message import Message
+from app.models.project import Project
 from app.services import chat
 from app.services.chat import regenerate_chat_message
 
@@ -124,6 +125,82 @@ def test_regenerate_adds_assistant_with_joined_content(client, db, fake_provider
     )
 
     assert _messages(db, conversation_id)[-1].content == "new answer"
+
+
+def test_regenerate_project_conversation_restores_project_instructions(
+    client, db, fake_provider
+):
+    token = _register_and_login(client, "alice")
+    project = client.post(
+        "/api/projects",
+        json={"name": "project", "instructions": "answer with project terminology"},
+        headers=_auth(token),
+    ).json()
+    conversation_id = client.post(
+        "/api/conversations",
+        json={"title": "c1", "project_id": project["id"]},
+        headers=_auth(token),
+    ).json()["id"]
+    _seed_chat(client, token, conversation_id, fake_provider)
+    fake_provider.chunks = ["regenerated"]
+
+    response = client.post(
+        f"/api/conversations/{conversation_id}/regenerate/stream", headers=_auth(token)
+    )
+
+    assert response.status_code == 200
+    system_message = fake_provider.calls[-1]["messages"][0]
+    assert system_message.role == "system"
+    assert "answer with project terminology" in system_message.content
+    assert db.get(Project, project["id"]) is not None
+
+
+def test_regenerate_rag_retrieval_is_scoped_to_conversation_project(
+    client, fake_provider, monkeypatch
+):
+    observed = {}
+
+    def fake_retrieve(session, user_id, query, top_k, project_id=None):
+        observed.update(
+            user_id=user_id, query=query, top_k=top_k, project_id=project_id
+        )
+        return []
+
+    monkeypatch.setattr(chat, "retrieve", fake_retrieve)
+    token = _register_and_login(client, "alice")
+    project = client.post(
+        "/api/projects", json={"name": "project-a"}, headers=_auth(token)
+    ).json()
+    other_project = client.post(
+        "/api/projects", json={"name": "project-b"}, headers=_auth(token)
+    ).json()
+    conversation_id = client.post(
+        "/api/conversations",
+        json={"title": "c1", "project_id": project["id"]},
+        headers=_auth(token),
+    ).json()["id"]
+    _seed_chat(client, token, conversation_id, fake_provider)
+    fake_provider.chunks = ["regenerated"]
+
+    response = client.post(
+        f"/api/conversations/{conversation_id}/regenerate/stream?use_rag=true&top_k=3",
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 200
+    assert observed == {
+        "user_id": 1,
+        "query": "question",
+        "top_k": 3,
+        "project_id": project["id"],
+    }
+    assert observed["project_id"] != other_project["id"]
+    assert [event["event"] for event in _parse_sse(response.text)] == [
+        "start",
+        "sources",
+        "delta",
+        "done",
+    ]
 
 
 def test_regenerate_other_users_conversation_is_404(client, fake_provider):

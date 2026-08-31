@@ -63,6 +63,36 @@ def test_knowledge_search_returns_safe_error_for_embedding_failure(monkeypatch):
     assert result.content == "知识库检索失败"
 
 
+def test_knowledge_search_scopes_retrieval_to_agent_project(monkeypatch):
+    received = {}
+
+    def fake_retrieve(session, user_id, query, top_k, project_id=None):
+        received.update(
+            session=session,
+            user_id=user_id,
+            query=query,
+            top_k=top_k,
+            project_id=project_id,
+        )
+        return []
+
+    monkeypatch.setattr(knowledge_search, "retrieve", fake_retrieve)
+    context = ToolContext(user_id=42, session=object(), project_id=9)
+
+    result = KnowledgeSearchTool().execute(
+        KnowledgeSearchInput(query="find private project data", top_k=4), context
+    )
+
+    assert result.success is True
+    assert received == {
+        "session": context.session,
+        "user_id": 42,
+        "query": "find private project data",
+        "top_k": 4,
+        "project_id": 9,
+    }
+
+
 def test_knowledge_search_bounds_returned_chunk_content(monkeypatch):
     monkeypatch.setattr(
         knowledge_search,

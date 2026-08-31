@@ -13,6 +13,10 @@ test('知识库可以上传并删除文档', async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('access_token', 'e2e-token')
   })
+  await page.route('**/api/auth/me', (route) => route.fulfill({
+    status: 200,
+    json: { id: 1, username: 'e2e-user', email: 'e2e@example.com' },
+  }))
   await page.route(/\/documents(?:\/\d+)?$/, async (route) => {
     const method = route.request().method()
     if (method === 'GET') {

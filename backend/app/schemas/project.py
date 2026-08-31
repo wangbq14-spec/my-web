@@ -17,6 +17,7 @@ class ProjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
     instructions: str | None = None
+    pinned: bool = False
 
 
 class ProjectOut(BaseModel):
@@ -26,6 +27,7 @@ class ProjectOut(BaseModel):
     name: str
     description: str | None
     instructions: str | None
+    pinned: bool
     created_at: datetime
     last_activity_at: datetime
     updated_at: datetime

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.models.document import Document, DocumentChunk
 from app.models.user import utcnow_naive
+from app.services.project import touch_project_activity
 
 
 def create_document(
@@ -60,8 +61,13 @@ def get_document(
 def update_document_project(
     session: Session, *, document: Document, project_id: int | None
 ) -> Document:
+    original_project_id = document.project_id
     document.project_id = project_id
     session.flush()
+    for affected_project_id in {
+        value for value in (original_project_id, project_id) if value is not None
+    }:
+        touch_project_activity(session, affected_project_id)
     return document
 
 
@@ -82,9 +88,12 @@ def delete_document(
     document = get_document(session, user_id=user_id, document_id=document_id)
     if document is None:
         return None
+    original_project_id = document.project_id
     delete_document_chunks(session, document_id=document_id)
     session.delete(document)
     session.flush()
+    if original_project_id is not None:
+        touch_project_activity(session, original_project_id)
     return document
 
 
@@ -154,6 +163,16 @@ def mark_ready(
 ) -> bool:
     """Publish a fenced processing generation and discard older chunks."""
     now = utcnow_naive()
+    project_id = session.scalar(
+        select(Document.project_id).where(
+            Document.id == document_id,
+            Document.user_id == user_id,
+            Document.status == "processing",
+            Document.processing_token == token,
+            Document.processing_generation == generation,
+            Document.deleted_at.is_(None),
+        )
+    )
     result = session.execute(
         update(Document)
         .where(
@@ -182,6 +201,8 @@ def mark_ready(
             DocumentChunk.generation < generation,
         )
     )
+    if project_id is not None:
+        touch_project_activity(session, project_id)
     return True
 
 
@@ -216,6 +237,9 @@ def mark_failed(
         ownership_conditions.append(Document.processing_token == token)
     if generation is not None:
         ownership_conditions.append(Document.processing_generation == generation)
+    project_id = session.scalar(
+        select(Document.project_id).where(*ownership_conditions)
+    )
 
     if retryable:
         document = session.scalar(
@@ -265,6 +289,8 @@ def mark_failed(
         session.execute(
             delete(DocumentChunk).where(DocumentChunk.document_id == document_id)
         )
+        if project_id is not None:
+            touch_project_activity(session, project_id)
         return "failed"
     return "cancelled"
 
@@ -292,6 +318,13 @@ def reset_for_manual_retry(session: Session, document_id: int, user_id: int) -> 
 
 def soft_delete_document(session: Session, document_id: int, user_id: int) -> bool:
     """Invalidate active workers while retaining the document record."""
+    project_id = session.scalar(
+        select(Document.project_id).where(
+            Document.id == document_id,
+            Document.user_id == user_id,
+            Document.status != "deleted",
+        )
+    )
     result = session.execute(
         update(Document)
         .where(
@@ -307,4 +340,8 @@ def soft_delete_document(session: Session, document_id: int, user_id: int) -> bo
             processing_lease_expires_at=None,
         )
     )
-    return result.rowcount == 1
+    if result.rowcount != 1:
+        return False
+    if project_id is not None:
+        touch_project_activity(session, project_id)
+    return True

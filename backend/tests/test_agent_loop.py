@@ -1,4 +1,6 @@
 import inspect
+import json
+from datetime import datetime
 
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
@@ -7,11 +9,16 @@ from sqlalchemy import select
 from app.agent.base import Tool, ToolContext, ToolResult
 from app.agent.loop import run_agent
 from app.agent.registry import ToolRegistry
+from app.agent.tools.knowledge_search import KnowledgeSearchTool
 from app.api.routes import agent as agent_route
 from app.llm.base import LLMError, LLMResponse, LLMToolCall
+from app.models.document import Document
 from app.models.message import Message
 from app.models.project import Project
 from app.models.user import User
+from app.rag import retrieval
+from app.rag.vector_store.base import ChunkVector
+from app.rag.vector_store.local import LocalVectorStore
 from app.schemas.conversation import ConversationCreate
 from app.services.conversation import create_conversation
 
@@ -27,6 +34,12 @@ class FakeProvider:
         if isinstance(response, Exception):
             raise response
         return response
+
+
+class FakeEmbeddingProvider:
+    def embed_query(self, text: str) -> list[float]:
+        del text
+        return [1.0, 0.0]
 
 
 class FakeInput(BaseModel):
@@ -61,6 +74,51 @@ def _create_user(db, username="alice"):
 
 def _create_conversation(db, user_id):
     return create_conversation(db, user_id, ConversationCreate(title="agent"))
+
+
+def _configure_real_rag(db, monkeypatch) -> LocalVectorStore:
+    class NonClosingSession:
+        def scalars(self, statement):
+            return db.scalars(statement)
+
+        def close(self) -> None:
+            pass
+
+    store = LocalVectorStore(NonClosingSession)
+    monkeypatch.setattr(retrieval, "get_embedding_provider", FakeEmbeddingProvider)
+    monkeypatch.setattr(retrieval, "get_vector_store", lambda: store)
+    return store
+
+
+def _index_agent_document(
+    db,
+    store: LocalVectorStore,
+    *,
+    user_id: int,
+    filename: str,
+    content: str,
+    project_id: int | None,
+) -> Document:
+    document = Document(
+        user_id=user_id,
+        project_id=project_id,
+        filename=f"stored-{filename}",
+        original_filename=filename,
+        content_type="text/plain",
+        file_size=len(content),
+        status="ready",
+        processing_generation=1,
+        active_generation=1,
+    )
+    db.add(document)
+    db.flush()
+    store.upsert_chunks(
+        user_id,
+        document.id,
+        1,
+        [ChunkVector(chunk_index=0, content=content, embedding=[1.0, 0.0])],
+    )
+    return document
 
 
 def _registry(tool=None):
@@ -105,6 +163,34 @@ def test_agent_project_instructions_are_injected_before_user_message(db):
     assert messages[-1].content == "hello"
 
 
+def test_agent_completion_touches_project_activity(db):
+    user_id = _create_user(db)
+    project = Project(user_id=user_id, name="project")
+    db.add(project)
+    db.flush()
+    conversation = create_conversation(
+        db, user_id, ConversationCreate(title="agent", project_id=project.id)
+    )
+    project.last_activity_at = datetime(2020, 1, 1, 0, 0, 0)
+    db.flush()
+
+    list(
+        run_agent(
+            db,
+            user_id,
+            conversation.id,
+            "hello",
+            _registry(),
+            FakeProvider([LLMResponse(content="final")]),
+            None,
+            2,
+        )
+    )
+
+    db.refresh(project)
+    assert project.last_activity_at > datetime(2020, 1, 1, 0, 0, 0)
+
+
 def test_agent_single_tool_then_final(db):
     user_id = _create_user(db)
     conversation = _create_conversation(db, user_id)
@@ -130,6 +216,145 @@ def test_agent_single_tool_then_final(db):
     ]
     assert tool.calls[0][0].value == 1
     assert provider.calls[1]["messages"][-1].content == "tool output"
+
+
+def test_project_agent_knowledge_search_uses_server_derived_project_scope(
+    db, monkeypatch
+):
+    store = _configure_real_rag(db, monkeypatch)
+    alice_id = _create_user(db, "alice")
+    bob_id = _create_user(db, "bob")
+    project_a = Project(user_id=alice_id, name="project-a")
+    project_b = Project(user_id=alice_id, name="project-b")
+    bob_project = Project(user_id=bob_id, name="bob-project")
+    db.add_all([project_a, project_b, bob_project])
+    db.flush()
+    conversation = create_conversation(
+        db, alice_id, ConversationCreate(title="agent", project_id=project_a.id)
+    )
+    visible = _index_agent_document(
+        db,
+        store,
+        user_id=alice_id,
+        filename="visible.txt",
+        content="alpha visible",
+        project_id=project_a.id,
+    )
+    _index_agent_document(
+        db,
+        store,
+        user_id=alice_id,
+        filename="other-project.txt",
+        content="alpha other project",
+        project_id=project_b.id,
+    )
+    _index_agent_document(
+        db,
+        store,
+        user_id=bob_id,
+        filename="other-user.txt",
+        content="alpha other user",
+        project_id=bob_project.id,
+    )
+    db.commit()
+    provider = FakeProvider(
+        [
+            LLMResponse(
+                tool_calls=[
+                    _call(
+                        name="knowledge_search",
+                        arguments='{"query": "alpha", "top_k": 5}',
+                    )
+                ]
+            ),
+            LLMResponse(content="final"),
+        ]
+    )
+
+    list(
+        run_agent(
+            db,
+            alice_id,
+            conversation.id,
+            "find project knowledge",
+            _registry(KnowledgeSearchTool()),
+            provider,
+            None,
+            2,
+        )
+    )
+
+    tool_chunks = json.loads(provider.calls[1]["messages"][-1].content)
+    assert [chunk["document_id"] for chunk in tool_chunks] == [visible.id]
+
+
+def test_non_project_agent_knowledge_search_keeps_user_wide_scope(db, monkeypatch):
+    store = _configure_real_rag(db, monkeypatch)
+    alice_id = _create_user(db, "alice")
+    bob_id = _create_user(db, "bob")
+    project_a = Project(user_id=alice_id, name="project-a")
+    project_b = Project(user_id=alice_id, name="project-b")
+    bob_project = Project(user_id=bob_id, name="bob-project")
+    db.add_all([project_a, project_b, bob_project])
+    db.flush()
+    conversation = _create_conversation(db, alice_id)
+    visible_a = _index_agent_document(
+        db,
+        store,
+        user_id=alice_id,
+        filename="project-a.txt",
+        content="alpha project a",
+        project_id=project_a.id,
+    )
+    visible_b = _index_agent_document(
+        db,
+        store,
+        user_id=alice_id,
+        filename="project-b.txt",
+        content="alpha project b",
+        project_id=project_b.id,
+    )
+    _index_agent_document(
+        db,
+        store,
+        user_id=bob_id,
+        filename="other-user.txt",
+        content="alpha other user",
+        project_id=bob_project.id,
+    )
+    db.commit()
+    provider = FakeProvider(
+        [
+            LLMResponse(
+                tool_calls=[
+                    _call(
+                        name="knowledge_search",
+                        arguments='{"query": "alpha", "top_k": 5}',
+                    )
+                ]
+            ),
+            LLMResponse(content="final"),
+        ]
+    )
+
+    list(
+        run_agent(
+            db,
+            alice_id,
+            conversation.id,
+            "find all my knowledge",
+            _registry(KnowledgeSearchTool()),
+            provider,
+            None,
+            2,
+        )
+    )
+
+    tool_chunks = json.loads(provider.calls[1]["messages"][-1].content)
+    assert {chunk["document_id"] for chunk in tool_chunks} == {
+        visible_a.id,
+        visible_b.id,
+    }
 
 
 def test_agent_multiple_tool_calls_are_sequential_and_linked(db):

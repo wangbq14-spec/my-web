@@ -3,12 +3,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ProjectsView from './ProjectsView.vue'
 
 const routerMock = vi.hoisted(() => ({ push: vi.fn() }))
+const routeMock = vi.hoisted(() => ({ query: {} }))
 vi.mock('../api/modules/project', () => ({ listProjects: vi.fn(), createProject: vi.fn(), updateProject: vi.fn(), deleteProject: vi.fn() }))
-vi.mock('vue-router', () => ({ useRouter: () => routerMock }))
+vi.mock('vue-router', () => ({ useRoute: () => routeMock, useRouter: () => routerMock }))
 
 import { createProject, deleteProject, listProjects, updateProject } from '../api/modules/project'
 
-const project = { id: 7, name: '产品发布', description: '整理发布素材', conversation_count: 3, document_count: 2, last_activity_at: '2026-08-30T09:00:00Z', created_at: '2026-08-30T08:00:00Z' }
+const project = { id: 7, name: '产品发布', description: '整理发布素材', instructions: '保持简洁', pinned: false, conversation_count: 3, document_count: 2, last_activity_at: '2026-08-30T09:00:00Z', created_at: '2026-08-30T08:00:00Z' }
 
 async function mountProjects() {
   const wrapper = mount(ProjectsView, { attachTo: document.body })
@@ -19,6 +20,7 @@ async function mountProjects() {
 describe('ProjectsView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    routeMock.query = {}
     listProjects.mockResolvedValue([project])
   })
 
@@ -72,6 +74,13 @@ describe('ProjectsView', () => {
     expect(document.activeElement).toBe(wrapper.get('.quick-create input').element)
   })
 
+  it('focuses the existing quick-create field when opened from the sidebar plus action', async () => {
+    routeMock.query = { create: '1' }
+    const wrapper = await mountProjects()
+
+    expect(document.activeElement).toBe(wrapper.get('.quick-create input').element)
+  })
+
   it('creates a project from the new-project form', async () => {
     listProjects
       .mockResolvedValueOnce([])
@@ -94,8 +103,40 @@ describe('ProjectsView', () => {
     await wrapper.get('.project-editor input').setValue('新版产品发布')
     await wrapper.get('.project-editor form').trigger('submit')
     await flushPromises()
-    expect(updateProject).toHaveBeenCalledWith(7, { name: '新版产品发布', description: '整理发布素材' })
+    expect(updateProject).toHaveBeenCalledWith(7, {
+      name: '新版产品发布',
+      description: '整理发布素材',
+      instructions: '保持简洁',
+    })
     expect(listProjects).toHaveBeenCalledTimes(2)
+  })
+
+  it('submits empty description and Instructions fields while editing', async () => {
+    updateProject.mockResolvedValue({ ...project, description: '', instructions: '' })
+    const wrapper = await mountProjects()
+    await wrapper.findAll('.project-actions .quiet-button')[1].trigger('click')
+    const textareas = wrapper.findAll('.project-editor textarea')
+    await textareas[0].setValue('')
+    await textareas[1].setValue('   ')
+    await wrapper.get('.project-editor form').trigger('submit')
+    await flushPromises()
+    expect(updateProject).toHaveBeenCalledWith(7, {
+      name: '产品发布',
+      description: '',
+      instructions: '',
+    })
+  })
+
+  it('pins a project and sorts pinned projects before newer activity', async () => {
+    const pinnedProject = { ...project, id: 8, name: '置顶研究', pinned: true, last_activity_at: '2020-01-01T00:00:00Z' }
+    listProjects.mockResolvedValue([project, pinnedProject])
+    updateProject.mockResolvedValue({ ...project, pinned: true })
+    const wrapper = await mountProjects()
+
+    expect(wrapper.findAll('.recent-grid .project-card strong')[0].text()).toBe('置顶研究')
+    await wrapper.get('.project-card .pin-button').trigger('click')
+    await flushPromises()
+    expect(updateProject).toHaveBeenCalledWith(8, { pinned: false })
   })
 
   it('requires confirmation before deleting a project', async () => {

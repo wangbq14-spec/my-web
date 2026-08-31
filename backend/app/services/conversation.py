@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.models.conversation import Conversation
 from app.models.project import Project
 from app.schemas.conversation import ConversationCreate, ConversationUpdate
+from app.services.project import touch_project_activity
 
 
 class ProjectNotFoundError(Exception):
@@ -35,8 +36,6 @@ def create_conversation(
     session.add(conversation)
     session.flush()
     if data.project_id is not None:
-        from app.services.project import touch_project_activity
-
         touch_project_activity(session, data.project_id)
     session.refresh(conversation)
     return conversation
@@ -82,6 +81,7 @@ def update_conversation(
     if conversation is None:
         return None
     fields = data.model_fields_set
+    original_project_id = conversation.project_id
     if "title" in fields:
         conversation.title = data.title
     if "project_id" in fields:
@@ -89,6 +89,16 @@ def update_conversation(
             _ensure_owned_project(session, user_id, data.project_id)
         conversation.project_id = data.project_id
     session.flush()
+    project_ids_to_touch: set[int] = set()
+    if "title" in fields and original_project_id is not None:
+        project_ids_to_touch.add(original_project_id)
+    if "project_id" in fields:
+        if original_project_id is not None:
+            project_ids_to_touch.add(original_project_id)
+        if data.project_id is not None:
+            project_ids_to_touch.add(data.project_id)
+    for project_id in project_ids_to_touch:
+        touch_project_activity(session, project_id)
     return conversation
 
 
@@ -100,6 +110,9 @@ def delete_conversation(
     conversation = get_conversation(session, user_id, conversation_id)
     if conversation is None:
         return False
+    original_project_id = conversation.project_id
     session.delete(conversation)
     session.flush()
+    if original_project_id is not None:
+        touch_project_activity(session, original_project_id)
     return True

@@ -9,7 +9,7 @@ import {
 } from '../api/modules/conversation'
 import { listMessages } from '../api/modules/message'
 import { listDocuments } from '../api/modules/document'
-import { listProjects } from '../api/modules/project'
+import { listProjects, updateProject } from '../api/modules/project'
 import { streamAgent, streamChat, streamRegenerate } from '../api/stream'
 import BrandIdentity from '../components/BrandIdentity.vue'
 import ThemeToggle from '../components/ThemeToggle.vue'
@@ -24,15 +24,38 @@ const authStore = useAuthStore()
 
 const conversations = ref([])
 const projects = ref([])
+const SIDEBAR_COLLAPSED_KEY = 'omnixa.sidebar.collapsed'
+const defaultCollapsedSections = {
+  pinned: false,
+  projects: false,
+  conversations: false,
+}
+
+function readCollapsedSections() {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) || '{}')
+    return Object.fromEntries(
+      Object.entries(defaultCollapsedSections).map(([section, fallback]) => [
+        section,
+        typeof saved?.[section] === 'boolean' ? saved[section] : fallback,
+      ]),
+    )
+  } catch {
+    return { ...defaultCollapsedSections }
+  }
+}
+
+const collapsedSections = reactive(readCollapsedSections())
 const activeProjectId = ref(null)
 const conversationListLoading = ref(false)
 const conversationListError = ref(null)
 const conversationSearch = ref('')
+const recentConversations = computed(() => conversations.value.filter((conversation) => !conversation.pinned))
 const filteredConversations = computed(() => {
   const query = conversationSearch.value.trim().toLocaleLowerCase()
-  if (!query) return conversations.value
+  if (!query) return recentConversations.value
 
-  return conversations.value.filter((conversation) =>
+  return recentConversations.value.filter((conversation) =>
     String(conversation.title || '').toLocaleLowerCase().includes(query),
   )
 })
@@ -49,6 +72,10 @@ const routeProjectId = computed(() => {
 const activeProject = computed(() => projects.value.find((project) => String(project.id) === String(activeProjectId.value)))
 const activeProjectName = computed(() => activeProject.value?.name || (activeProjectId.value ? `项目 ${activeProjectId.value}` : ''))
 const recentProjects = computed(() => projects.value.slice(0, 3))
+const pinnedConversations = computed(() => conversations.value.filter((conversation) => conversation.pinned).slice(0, 3))
+const pinnedProjects = computed(() => projects.value.filter((project) => project.pinned).slice(0, 3))
+const hasPinnedItems = computed(() => pinnedConversations.value.length > 0 || pinnedProjects.value.length > 0)
+const knowledgeRouteActive = computed(() => (route.path || '').replace(/\/$/, '') === '/knowledge')
 
 const messages = ref([])
 const messagesLoading = ref(false)
@@ -86,6 +113,8 @@ const isSidebarOpen = ref(false)
 const isCreating = ref(false)
 const openConversationMenuId = ref(null)
 const conversationMenuOpensUp = ref(false)
+const pinningConversationId = ref(null)
+const pinningProjectId = ref(null)
 const editingConversationId = ref(null)
 const renameTitle = ref('')
 const originalRenameTitle = ref('')
@@ -109,13 +138,23 @@ let localMessageSequence = 0
 
 const suggestionsByMode = {
   chat: [
-    '帮我解释一段代码',
-    '帮我规划一个项目',
-    '总结一段内容',
-    '帮我解决一个报错',
+    '这段代码是什么意思？',
+    '我应该怎么规划这个项目？',
+    '这段内容可以怎么总结？',
+    '这个报错应该怎么解决？',
   ],
-  rag: ['基于资料总结', '对比资料中的方案'],
-  agent: ['比较方案并给出下一步', '把目标拆成可执行步骤'],
+  rag: [
+    '这份资料主要讲了什么？',
+    '资料中有哪些关键结论？',
+    '资料里的不同方案有什么区别？',
+    '根据这些资料，我下一步应该怎么做？',
+  ],
+  agent: [
+    '帮我比较这两个方案，并给出下一步建议',
+    '把这个目标拆成可执行的步骤',
+    '分析手头资料后，列出需要确认的风险点',
+    '制定一个从现状到目标的行动计划',
+  ],
 }
 
 const capabilityOptions = [
@@ -273,6 +312,73 @@ function sortConversations(items) {
   })
 }
 
+function toggleSidebarSection(section) {
+  collapsedSections[section] = !collapsedSections[section]
+  try {
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, JSON.stringify(collapsedSections))
+  } catch {
+    // The sidebar still works when storage is unavailable.
+  }
+}
+
+function conversationProjectName(conversation) {
+  if (conversation?.project_id === undefined || conversation?.project_id === null) return ''
+  return projects.value.find((project) => String(project.id) === String(conversation.project_id))?.name || ''
+}
+
+function isProjectActive(projectId) {
+  const routeProjectParam = Array.isArray(route.params?.id) ? route.params.id[0] : route.params?.id
+  if (routeProjectParam !== undefined && routeProjectParam !== null) {
+    return String(routeProjectParam) === String(projectId)
+  }
+  return (route.path || '').replace(/\/$/, '') === `/projects/${projectId}`
+}
+
+function openProject(projectId) {
+  isSidebarOpen.value = false
+  router.push({ name: 'project-detail', params: { id: projectId } })
+}
+
+function navigateFromSidebar(location) {
+  isSidebarOpen.value = false
+  router.push(location)
+}
+
+function openProjectQuickCreate() {
+  navigateFromSidebar({ path: '/projects', query: { create: '1' } })
+}
+
+async function toggleConversationPinned(conversation) {
+  if (pinningConversationId.value !== null || isStreaming.value) return
+  closeConversationMenu()
+  const pinned = !conversation.pinned
+  pinningConversationId.value = conversation.id
+  try {
+    const updated = await updateConversation(conversation.id, { pinned })
+    const index = conversations.value.findIndex((item) => String(item.id) === String(conversation.id))
+    if (index !== -1) conversations.value[index] = { ...conversations.value[index], ...updated, pinned }
+  } catch {
+    error.value = pinned ? '置顶会话失败，请稍后重试' : '取消置顶会话失败，请稍后重试'
+  } finally {
+    pinningConversationId.value = null
+  }
+}
+
+async function toggleProjectPinned(project) {
+  if (pinningProjectId.value !== null) return
+  const pinned = !project.pinned
+  pinningProjectId.value = project.id
+  try {
+    const updated = await updateProject(project.id, { pinned })
+    const index = projects.value.findIndex((item) => String(item.id) === String(project.id))
+    if (index !== -1) projects.value[index] = { ...projects.value[index], ...updated, pinned }
+  } catch {
+    error.value = pinned ? '置顶项目失败，请稍后重试' : '取消置顶项目失败，请稍后重试'
+  } finally {
+    pinningProjectId.value = null
+  }
+}
+
 async function loadConversations() {
   const seq = ++listRequestSeq
   if (isMounted) {
@@ -306,7 +412,7 @@ async function selectConversation(id) {
   const isSwitchingConversation = activeConversationId.value !== id
   activeConversationId.value = id
   const conversation = conversations.value.find((item) => String(item.id) === String(id))
-  activeProjectId.value = conversation?.project_id ?? routeProjectId.value
+  activeProjectId.value = conversation ? (conversation.project_id ?? null) : routeProjectId.value
   if (isSwitchingConversation && activeController) {
     activeController.abort()
     isStreaming.value = false
@@ -947,6 +1053,21 @@ function onDeleteDialogKeydown(event) {
   }
 }
 
+function onSidebarKeydown(event) {
+  if (event.key !== 'Tab' || !isSidebarDrawer.value || !isSidebarOpen.value) return
+  const focusable = getFocusableElements(event.currentTarget)
+  if (!focusable.length) return
+  const first = focusable[0]
+  const last = focusable.at(-1)
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
 onMounted(() => {
   applyCapabilityFromRoute()
   activeProjectId.value = routeProjectId.value
@@ -968,7 +1089,7 @@ watch(
 )
 
 watch(routeProjectId, (projectId) => {
-  if (projectId) activeProjectId.value = projectId
+  activeProjectId.value = projectId
 })
 
 onBeforeUnmount(() => {
@@ -994,9 +1115,11 @@ onBeforeUnmount(() => {
       class="chat-shell"
       :inert="confirmDeleteId !== null ? '' : undefined"
     >
-      <div
+      <button
         v-if="isSidebarOpen"
+        type="button"
         class="backdrop"
+        aria-label="关闭侧边栏"
         @click="closeSidebar"
       />
 
@@ -1004,8 +1127,12 @@ onBeforeUnmount(() => {
         id="chat-sidebar"
         class="sidebar"
         :class="{ open: isSidebarOpen }"
+        :role="isSidebarDrawer ? 'dialog' : undefined"
+        :aria-modal="isSidebarDrawer && isSidebarOpen ? 'true' : undefined"
+        :aria-label="isSidebarDrawer ? '导航侧边栏' : undefined"
         :inert="isSidebarDrawer && !isSidebarOpen ? '' : undefined"
         :aria-hidden="isSidebarDrawer && !isSidebarOpen ? 'true' : undefined"
+        @keydown="onSidebarKeydown"
       >
         <div class="sidebar-header">
           <div class="brand">
@@ -1040,199 +1167,401 @@ onBeforeUnmount(() => {
           >
         </div>
 
-        <nav
-          class="workspace-nav"
-          aria-label="工作区"
-        >
-          <p class="sidebar-section-title">
-            工作区
-          </p>
-          <button
-            type="button"
-            class="workspace-nav-item workspace-project-nav"
-            @click="router.push('/projects')"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-            >
-              <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H10l2 2h5.5A2.5 2.5 0 0 1 20 8.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5Z" />
-              <path d="M4 9h16" />
-            </svg>
-            <span>项目</span>
-          </button>
-          <div
-            v-if="recentProjects.length"
-            class="recent-projects"
-            aria-label="最近项目"
-          >
-            <button
-              v-for="project in recentProjects"
-              :key="project.id"
-              type="button"
-              class="recent-project-link"
-              @click="router.push({ name: 'project-detail', params: { id: project.id } })"
-            >
-              <span>{{ project.name }}</span><span aria-hidden="true">→</span>
-            </button>
+        <div class="sidebar-primary">
+          <section class="sidebar-group pinned-section">
             <button
               type="button"
-              class="more-projects-link"
-              @click="router.push('/projects')"
+              class="sidebar-section-toggle"
+              data-sidebar-section-toggle="pinned"
+              aria-controls="sidebar-pinned-items"
+              :aria-expanded="collapsedSections.pinned ? 'false' : 'true'"
+              @click="toggleSidebarSection('pinned')"
             >
-              更多 <span aria-hidden="true">→</span>
+              <span>置顶</span>
+              <svg
+                class="section-chevron"
+                :class="{ collapsed: collapsedSections.pinned }"
+                viewBox="0 0 20 20"
+                aria-hidden="true"
+              >
+                <path d="m6 8 4 4 4-4" />
+              </svg>
             </button>
-          </div>
-          <button
-            type="button"
-            class="workspace-nav-item"
-            @click="router.push('/knowledge')"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-            >
-              <path d="M5 4.5A2.5 2.5 0 0 1 7.5 2H19v17.5H7.5A2.5 2.5 0 0 0 5 22Z" />
-              <path d="M5 4.5v15" />
-              <path d="M9 6h6M9 10h6" />
-            </svg>
-            <span>知识库</span>
-          </button>
-        </nav>
+            <Transition name="sidebar-collapse">
+              <div
+                v-show="!collapsedSections.pinned"
+                id="sidebar-pinned-items"
+                class="pinned-list sidebar-collapsible"
+              >
+                <div
+                  v-if="!hasPinnedItems"
+                  class="sidebar-empty-hint"
+                >
+                  暂无置顶
+                </div>
+                <div
+                  v-for="conv in pinnedConversations"
+                  :key="`pinned-conversation-${conv.id}`"
+                  class="pinned-entry-row"
+                >
+                  <button
+                    type="button"
+                    class="pinned-entry pinned-conversation-entry"
+                    :class="{ active: conv.id === activeConversationId }"
+                    :aria-current="conv.id === activeConversationId ? 'true' : undefined"
+                    @click="selectConversation(conv.id)"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                    >
+                      <path d="M5 5h14v10H9l-4 4Z" />
+                    </svg>
+                    <span class="pinned-entry-copy">
+                      <span class="pinned-entry-title">{{ conv.title }}</span>
+                      <small>会话</small>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    class="sidebar-pin-toggle"
+                    :aria-label="`取消置顶会话：${conv.title}`"
+                    :disabled="pinningConversationId !== null || isStreaming"
+                    @click="toggleConversationPinned(conv)"
+                  >
+                    <span aria-hidden="true">★</span>
+                  </button>
+                </div>
+                <div
+                  v-for="project in pinnedProjects"
+                  :key="`pinned-project-${project.id}`"
+                  class="pinned-entry-row"
+                >
+                  <button
+                    type="button"
+                    class="pinned-entry pinned-project-entry"
+                    :class="{ active: isProjectActive(project.id) }"
+                    :aria-current="isProjectActive(project.id) ? 'page' : undefined"
+                    @click="openProject(project.id)"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                    >
+                      <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H10l2 2h5.5A2.5 2.5 0 0 1 20 8.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5Z" />
+                      <path d="M4 9h16" />
+                    </svg>
+                    <span class="pinned-entry-copy">
+                      <span class="pinned-entry-title">{{ project.name }}</span>
+                      <small>项目</small>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    class="sidebar-pin-toggle"
+                    :aria-label="`取消置顶项目：${project.name}`"
+                    :disabled="pinningProjectId !== null"
+                    @click="toggleProjectPinned(project)"
+                  >
+                    <span aria-hidden="true">★</span>
+                  </button>
+                </div>
+              </div>
+            </Transition>
+          </section>
 
-        <p class="sidebar-section-title recent-conversations-title">
-          最近对话
-        </p>
-        <div class="conversation-list">
-          <div
-            v-if="conversationListLoading && conversations.length === 0"
-            class="skeleton-list"
-          >
-            <div
-              v-for="i in 4"
-              :key="i"
-              class="skeleton-item"
-            />
-          </div>
-          <div
-            v-else-if="conversationListError && conversations.length === 0"
-            class="sidebar-load-error sidebar-hint error"
-            role="alert"
-          >
-            <strong>会话加载失败</strong>
-            <span>{{ conversationListError }}</span>
-            <button
-              type="button"
-              class="conversation-list-retry"
-              @click="loadConversations"
-            >
-              重试
-            </button>
-          </div>
-          <div
-            v-else-if="conversations.length === 0"
-            class="sidebar-hint"
-          >
-            还没有对话
-          </div>
-          <div
-            v-if="conversationListError && conversations.length > 0"
-            class="sidebar-refresh-error"
-            role="alert"
-          >
-            <span>刷新会话失败</span>
-            <button
-              type="button"
-              class="conversation-list-retry"
-              @click="loadConversations"
-            >
-              重试
-            </button>
-          </div>
-          <div
-            v-if="conversations.length > 0 && filteredConversations.length === 0"
-            class="sidebar-hint"
-          >
-            没有找到相关对话
-          </div>
-          <div
-            v-for="conv in filteredConversations"
-            :key="conv.id"
-            class="conversation-row"
-          >
-            <button
-              v-if="editingConversationId !== conv.id"
-              type="button"
-              class="conversation-item"
-              :class="{ active: conv.id === activeConversationId }"
-              :aria-current="conv.id === activeConversationId ? 'true' : undefined"
-              @click="selectConversation(conv.id)"
-            >
-              <span
-                class="conversation-title"
-                @dblclick.stop="startRename(conv)"
-              >{{ conv.title }}</span>
-            </button>
-            <input
-              v-else
-              v-model="renameTitle"
-              class="conversation-rename-input"
-              type="text"
-              maxlength="200"
-              aria-label="重命名会话"
-              :aria-busy="isRenaming"
-              :disabled="isRenaming"
-              @keydown="onRenameKeydown"
-              @blur="saveRename"
-            >
-            <div class="conversation-actions">
+          <section class="sidebar-group recent-projects-section">
+            <div class="project-section-heading">
               <button
                 type="button"
-                class="conversation-more"
-                aria-label="会话操作"
-                aria-haspopup="menu"
-                :aria-expanded="openConversationMenuId === conv.id ? 'true' : 'false'"
-                @click.stop="toggleConversationMenu(conv.id, $event)"
+                class="sidebar-section-toggle project-section-toggle"
+                data-sidebar-section-toggle="projects"
+                aria-controls="sidebar-recent-projects"
+                :aria-expanded="collapsedSections.projects ? 'false' : 'true'"
+                @click="toggleSidebarSection('projects')"
               >
                 <svg
-                  viewBox="0 0 24 24"
+                  class="section-chevron"
+                  :class="{ collapsed: collapsedSections.projects }"
+                  viewBox="0 0 20 20"
                   aria-hidden="true"
                 >
-                  <path d="M5 12h.01M12 12h.01M19 12h.01" />
+                  <path d="m6 8 4 4 4-4" />
                 </svg>
+                <span>项目</span>
               </button>
-              <div
-                v-if="openConversationMenuId === conv.id"
-                class="conversation-menu"
-                :class="{ 'menu-up': conversationMenuOpensUp }"
-                role="menu"
-                @click.stop
-              >
+              <div class="project-section-actions">
                 <button
                   type="button"
-                  role="menuitem"
-                  :disabled="isStreaming"
-                  @click="startRename(conv)"
+                  class="project-section-action"
+                  aria-label="更多项目"
+                  @click="navigateFromSidebar('/projects')"
                 >
-                  重命名
+                  ⋯
                 </button>
                 <button
                   type="button"
-                  role="menuitem"
-                  class="danger"
-                  :disabled="isStreaming"
-                  @click="requestDelete(conv.id, $event)"
+                  class="project-section-action"
+                  aria-label="快速新建项目"
+                  @click="openProjectQuickCreate"
                 >
-                  删除
+                  +
                 </button>
               </div>
             </div>
-          </div>
+            <Transition name="sidebar-collapse">
+              <div
+                v-show="!collapsedSections.projects"
+                id="sidebar-recent-projects"
+                class="recent-projects sidebar-collapsible"
+                aria-label="最近项目"
+              >
+                <div
+                  v-for="project in recentProjects"
+                  :key="project.id"
+                  class="recent-project-row"
+                >
+                  <button
+                    type="button"
+                    class="recent-project-link"
+                    :class="{ active: isProjectActive(project.id) }"
+                    :aria-current="isProjectActive(project.id) ? 'page' : undefined"
+                    @click="openProject(project.id)"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                    >
+                      <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H10l2 2h5.5A2.5 2.5 0 0 1 20 8.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5Z" />
+                      <path d="M4 9h16" />
+                    </svg>
+                    <span class="recent-project-copy">
+                      <span class="recent-project-name">{{ project.name }}</span>
+                      <small>{{ project.conversation_count || 0 }} 会话 · {{ project.document_count || 0 }} 资料</small>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    class="sidebar-pin-toggle project-pin-toggle"
+                    :aria-label="`${project.pinned ? '取消置顶' : '置顶'}项目：${project.name}`"
+                    :disabled="pinningProjectId !== null"
+                    @click="toggleProjectPinned(project)"
+                  >
+                    <span aria-hidden="true">{{ project.pinned ? '★' : '☆' }}</span>
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  class="more-projects-link"
+                  @click="navigateFromSidebar('/projects')"
+                >
+                  更多项目 <span aria-hidden="true">→</span>
+                </button>
+              </div>
+            </Transition>
+          </section>
+
+          <nav aria-label="主导航">
+            <button
+              type="button"
+              class="workspace-nav-item knowledge-nav-item"
+              :aria-current="knowledgeRouteActive ? 'page' : undefined"
+              @click="navigateFromSidebar('/knowledge')"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path d="M5 4.5A2.5 2.5 0 0 1 7.5 2H19v17.5H7.5A2.5 2.5 0 0 0 5 22Z" />
+                <path d="M5 4.5v15" />
+                <path d="M9 6h6M9 10h6" />
+              </svg>
+              <span>知识库</span>
+            </button>
+          </nav>
         </div>
+
+        <section class="recent-conversations">
+          <button
+            type="button"
+            class="sidebar-section-toggle recent-conversations-title"
+            data-sidebar-section-toggle="conversations"
+            aria-controls="sidebar-recent-conversations"
+            :aria-expanded="collapsedSections.conversations ? 'false' : 'true'"
+            @click="toggleSidebarSection('conversations')"
+          >
+            <span>最近</span>
+            <svg
+              class="section-chevron"
+              :class="{ collapsed: collapsedSections.conversations }"
+              viewBox="0 0 20 20"
+              aria-hidden="true"
+            >
+              <path d="m6 8 4 4 4-4" />
+            </svg>
+          </button>
+          <Transition name="sidebar-collapse">
+            <div
+              v-show="!collapsedSections.conversations"
+              id="sidebar-recent-conversations"
+              class="conversation-list sidebar-collapsible"
+            >
+              <div
+                v-if="conversationListLoading && conversations.length === 0"
+                class="skeleton-list"
+              >
+                <div
+                  v-for="i in 4"
+                  :key="i"
+                  class="skeleton-item"
+                />
+              </div>
+              <div
+                v-else-if="conversationListError && conversations.length === 0"
+                class="sidebar-load-error sidebar-hint error"
+                role="alert"
+              >
+                <strong>会话加载失败</strong>
+                <span>{{ conversationListError }}</span>
+                <button
+                  type="button"
+                  class="conversation-list-retry"
+                  @click="loadConversations"
+                >
+                  重试
+                </button>
+              </div>
+              <div
+                v-else-if="recentConversations.length === 0"
+                class="sidebar-hint"
+              >
+                还没有对话
+              </div>
+              <div
+                v-if="conversationListError && recentConversations.length > 0"
+                class="sidebar-refresh-error"
+                role="alert"
+              >
+                <span>刷新会话失败</span>
+                <button
+                  type="button"
+                  class="conversation-list-retry"
+                  @click="loadConversations"
+                >
+                  重试
+                </button>
+              </div>
+              <div
+                v-if="recentConversations.length > 0 && filteredConversations.length === 0"
+                class="sidebar-hint"
+              >
+                没有找到相关对话
+              </div>
+              <div
+                v-for="conv in filteredConversations"
+                :key="conv.id"
+                class="conversation-row"
+              >
+                <button
+                  v-if="editingConversationId !== conv.id"
+                  type="button"
+                  class="conversation-item"
+                  :class="{ active: conv.id === activeConversationId }"
+                  :aria-current="conv.id === activeConversationId ? 'true' : undefined"
+                  @click="selectConversation(conv.id)"
+                >
+                  <svg
+                    class="conversation-icon"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                  >
+                    <path d="M5 5h14v10H9l-4 4Z" />
+                  </svg>
+                  <span class="conversation-copy">
+                    <span
+                      class="conversation-title"
+                      @dblclick.stop="startRename(conv)"
+                    >{{ conv.title }}</span>
+                    <span
+                      v-if="conversationProjectName(conv)"
+                      class="conversation-project-tag"
+                    >{{ conversationProjectName(conv) }}</span>
+                  </span>
+                </button>
+                <input
+                  v-else
+                  v-model="renameTitle"
+                  class="conversation-rename-input"
+                  type="text"
+                  maxlength="200"
+                  aria-label="重命名会话"
+                  :aria-busy="isRenaming"
+                  :disabled="isRenaming"
+                  @keydown="onRenameKeydown"
+                  @blur="saveRename"
+                >
+                <div class="conversation-actions">
+                  <button
+                    type="button"
+                    class="conversation-more"
+                    aria-label="会话操作"
+                    aria-haspopup="menu"
+                    :aria-expanded="openConversationMenuId === conv.id ? 'true' : 'false'"
+                    @click.stop="toggleConversationMenu(conv.id, $event)"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                    >
+                      <path d="M5 12h.01M12 12h.01M19 12h.01" />
+                    </svg>
+                  </button>
+                  <div
+                    v-if="openConversationMenuId === conv.id"
+                    class="conversation-menu"
+                    :class="{ 'menu-up': conversationMenuOpensUp }"
+                    role="menu"
+                    @click.stop
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      :disabled="isStreaming"
+                      @click="startRename(conv)"
+                    >
+                      重命名
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      class="danger"
+                      :disabled="isStreaming"
+                      @click="requestDelete(conv.id, $event)"
+                    >
+                      删除
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      :disabled="isStreaming || pinningConversationId !== null"
+                      @click="toggleConversationPinned(conv)"
+                    >
+                      {{ conv.pinned ? '取消置顶' : '置顶' }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Transition>
+        </section>
 
         <div class="sidebar-footer">
           <div class="footer-account-row">
-            <span class="footer-username">{{ authStore.user?.username || '已登录' }}</span>
+            <span>当前用户</span>
+            <strong class="footer-username">{{ authStore.user?.username || '已登录' }}</strong>
+          </div>
+          <div class="footer-settings-row">
+            <span>设置 / 主题</span>
             <ThemeToggle />
           </div>
           <button
@@ -1249,6 +1578,7 @@ onBeforeUnmount(() => {
       <section
         class="main"
         :class="{ 'is-conversation-active': isConversationActive }"
+        :inert="isSidebarDrawer && isSidebarOpen ? '' : undefined"
       >
         <header class="chat-header">
           <button
@@ -1713,6 +2043,7 @@ onBeforeUnmount(() => {
 
 .sidebar-header {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   padding: var(--space-4);
@@ -1770,13 +2101,16 @@ onBeforeUnmount(() => {
 
 .conversation-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   padding: var(--space-1) var(--space-2);
+  scrollbar-gutter: stable;
 }
 
 .sidebar-search {
   display: grid;
+  flex: 0 0 auto;
   gap: var(--space-1);
   padding: 0 var(--space-4) var(--space-2);
 }
@@ -1799,22 +2133,112 @@ onBeforeUnmount(() => {
   font-size: var(--text-sm);
 }
 
-.workspace-nav {
+.sidebar-primary {
   display: grid;
+  flex: 0 0 auto;
   gap: var(--space-1);
-  padding: 0 var(--space-4) var(--space-2);
+  padding: 0 var(--space-2) var(--space-1);
 }
 
-.sidebar-section-title {
-  margin: 0;
+.sidebar-group {
+  min-width: 0;
+}
+
+.sidebar-section-toggle {
+  display: flex;
+  width: 100%;
+  min-height: var(--space-8);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
   color: var(--color-text-secondary);
+  font: inherit;
   font-size: var(--text-xs);
   font-weight: 600;
   letter-spacing: 0.04em;
+  text-align: left;
+  cursor: pointer;
 }
 
-.workspace-nav .sidebar-section-title {
-  padding: var(--space-1) 0;
+.sidebar-section-toggle:hover,
+.sidebar-section-toggle:focus-visible {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.section-chevron {
+  width: var(--space-4);
+  height: var(--space-4);
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+  transition: transform var(--duration-normal) var(--ease-standard);
+}
+
+.section-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+.sidebar-collapse-enter-active,
+.sidebar-collapse-leave-active {
+  transform-origin: top;
+  transition: opacity var(--duration-normal) var(--ease-standard), transform var(--duration-normal) var(--ease-standard);
+}
+
+.sidebar-collapse-enter-from,
+.sidebar-collapse-leave-to {
+  opacity: 0;
+  transform: scaleY(0.96) translateY(-4px);
+}
+
+.sidebar-collapsible {
+  transform-origin: top;
+}
+
+.project-section-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.project-section-toggle {
+  flex: 1;
+  min-width: 0;
+  justify-content: flex-start;
+}
+
+.project-section-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 1px;
+}
+
+.project-section-action {
+  width: var(--space-8);
+  height: var(--space-8);
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: var(--text-md);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.project-section-action:hover,
+.project-section-action:focus-visible {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
 }
 
 .workspace-nav-item {
@@ -1852,12 +2276,135 @@ onBeforeUnmount(() => {
   color: var(--color-accent);
 }
 
+.workspace-nav-item[aria-current="page"] {
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--color-accent) 68%, transparent);
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+  font-weight: 650;
+}
+
+.knowledge-nav-item {
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
+}
+
+.sidebar-empty-hint {
+  padding: var(--space-1) var(--space-2) var(--space-2);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+}
+
+.pinned-list {
+  display: grid;
+  gap: 1px;
+}
+
+.pinned-entry-row,
+.recent-project-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 1px;
+}
+
+.pinned-entry {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: var(--space-9);
+  align-items: center;
+  gap: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-lg);
+  padding: var(--space-1) var(--space-2);
+  overflow: hidden;
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pinned-entry > svg,
+.recent-project-link > svg {
+  width: var(--space-4);
+  height: var(--space-4);
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
+.pinned-conversation-entry > svg {
+  color: var(--color-accent);
+}
+
+.pinned-project-entry > svg {
+  color: var(--color-secondary-identity);
+}
+
+.pinned-entry-copy,
+.recent-project-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.pinned-entry-title,
+.recent-project-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pinned-entry small,
+.recent-project-link small {
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  font-weight: 400;
+}
+
+.pinned-entry:hover,
+.pinned-entry:focus-visible {
+  background: var(--color-surface-hover);
+}
+
+.pinned-entry.active {
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--color-accent) 68%, transparent);
+  background: var(--color-surface-hover);
+  font-weight: 650;
+}
+
+.sidebar-pin-toggle {
+  width: var(--space-9);
+  min-width: var(--space-9);
+  height: var(--space-9);
+  border: 0;
+  border-radius: var(--radius-lg);
+  padding: 0;
+  background: transparent;
+  color: var(--color-accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.sidebar-pin-toggle:hover:not(:disabled),
+.sidebar-pin-toggle:focus-visible:not(:disabled) {
+  background: var(--color-surface-hover);
+}
+
+.sidebar-pin-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .recent-projects {
   display: grid;
-  gap: 2px;
+  gap: 1px;
   min-width: 0;
-  margin: calc(-1 * var(--space-1)) 0 var(--space-1);
-  padding-left: var(--space-8);
+  margin: 0;
   color: var(--color-text-tertiary);
   font-size: var(--text-xs);
 }
@@ -1865,6 +2412,7 @@ onBeforeUnmount(() => {
 .recent-project-link,
 .more-projects-link {
   display: flex;
+  flex: 1;
   min-width: 0;
   align-items: center;
   justify-content: space-between;
@@ -1880,10 +2428,17 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
-.recent-project-link span:first-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.recent-project-link {
+  min-height: var(--space-11);
+  justify-content: flex-start;
+  padding: var(--space-1) var(--space-2);
+}
+
+.recent-project-link.active {
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--color-accent) 68%, transparent);
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+  font-weight: 650;
 }
 
 .recent-project-link:hover,
@@ -1895,11 +2450,21 @@ onBeforeUnmount(() => {
 }
 
 .more-projects-link {
+  margin-left: calc(var(--space-4) + var(--space-2));
   color: var(--color-accent);
 }
 
+.recent-conversations {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
 .recent-conversations-title {
-  padding: var(--space-2) var(--space-4) var(--space-1);
+  flex: 0 0 auto;
+  margin: 0 var(--space-2);
+  padding: var(--space-2);
 }
 
 .sidebar-hint {
@@ -1971,9 +2536,11 @@ onBeforeUnmount(() => {
 }
 
 .conversation-item {
-  display: block;
+  display: flex;
   flex: 1;
   min-width: 0;
+  align-items: flex-start;
+  gap: var(--space-2);
   text-align: left;
   min-height: var(--space-11);
   padding: var(--space-2) var(--space-3);
@@ -1995,9 +2562,26 @@ onBeforeUnmount(() => {
 
 .conversation-item.active {
   box-shadow: inset 2px 0 0 color-mix(in srgb, var(--color-accent) 68%, transparent);
-  background: color-mix(in srgb, var(--color-accent-soft) 62%, transparent);
+  background: var(--color-surface-hover);
   color: var(--color-text-primary);
   font-weight: 600;
+}
+
+.conversation-icon {
+  width: var(--space-4);
+  height: var(--space-4);
+  flex: 0 0 auto;
+  margin-top: 2px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
+.conversation-copy {
+  display: block;
+  min-width: 0;
 }
 
 .conversation-title {
@@ -2005,6 +2589,23 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.conversation-project-tag {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 2px;
+  border-radius: var(--radius-pill);
+  padding: 1px var(--space-2);
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-secondary-identity) 10%, transparent);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .conversation-rename-input {
@@ -2113,6 +2714,7 @@ onBeforeUnmount(() => {
 
 .sidebar-footer {
   display: grid;
+  flex: 0 0 auto;
   gap: var(--space-2);
   border-top: 1px solid var(--color-border-subtle);
   padding: var(--space-3) var(--space-4);
@@ -2124,6 +2726,15 @@ onBeforeUnmount(() => {
   display: flex;
   min-width: 0;
   align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.footer-settings-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--space-2);
 }
 
@@ -2325,11 +2936,16 @@ onBeforeUnmount(() => {
 .idle-prompt-rows {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: 1fr;
+  gap: var(--space-2);
   width: min(100% - var(--space-10), 860px);
   margin: var(--space-6) auto clamp(var(--space-8), 8vh, var(--space-10));
 }
 
 .suggestion-card {
+  width: 100%;
+  min-width: 0;
+  height: 100%;
   min-height: var(--space-11);
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--color-border-subtle);
@@ -2909,7 +3525,10 @@ onBeforeUnmount(() => {
     position: fixed;
     inset: 0;
     z-index: 20;
+    border: 0;
+    padding: 0;
     background: color-mix(in srgb, var(--color-text-primary) 32%, transparent);
+    cursor: pointer;
   }
 
   .menu-btn {
@@ -2941,7 +3560,7 @@ onBeforeUnmount(() => {
     max-width: 92%;
   }
 
-  .suggestions {
+  .idle-prompt-rows {
     grid-template-columns: 1fr;
   }
 }

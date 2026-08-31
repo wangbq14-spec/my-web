@@ -10,7 +10,7 @@ const routerMock = vi.hoisted(() => ({
   replace: vi.fn(),
   push: vi.fn(),
 }))
-const routeMock = vi.hoisted(() => ({ path: '/chat', query: {} }))
+const routeMock = vi.hoisted(() => ({ path: '/chat', name: 'chat', params: {}, query: {} }))
 
 vi.mock('../api/modules/conversation', () => ({
   listConversations: vi.fn(),
@@ -26,6 +26,7 @@ vi.mock('../api/modules/document', () => ({
 }))
 vi.mock('../api/modules/project', () => ({
   listProjects: vi.fn(),
+  updateProject: vi.fn(),
 }))
 vi.mock('../api/stream', () => ({
   streamAgent: vi.fn(),
@@ -48,7 +49,7 @@ import {
 } from '../api/modules/conversation'
 import { listMessages } from '../api/modules/message'
 import { listDocuments } from '../api/modules/document'
-import { listProjects } from '../api/modules/project'
+import { listProjects, updateProject } from '../api/modules/project'
 import { streamAgent, streamChat, streamRegenerate } from '../api/stream'
 
 async function mountChat() {
@@ -94,7 +95,10 @@ describe('ChatView', () => {
     vi.unstubAllGlobals()
     authStore.user = { username: 'alice' }
     routeMock.path = '/chat'
+    routeMock.name = 'chat'
+    routeMock.params = {}
     routeMock.query = {}
+    localStorage.removeItem('omnixa.sidebar.collapsed')
     listDocuments.mockResolvedValue([])
     listProjects.mockResolvedValue([])
   })
@@ -123,33 +127,33 @@ describe('ChatView', () => {
     expect(wrapper.find('.sidebar').find('.logout-btn').exists()).toBe(true)
   })
 
-  it('sidebar 工作区只显示项目和知识库入口并跳转到对应路由', async () => {
+  it('sidebar removes the workspace layer and renders project controls plus independent Knowledge navigation', async () => {
     listConversations.mockResolvedValue([])
     const wrapper = await mountChat()
 
-    const workspaceNav = wrapper.get('.sidebar .workspace-nav')
-    const workspaceItems = workspaceNav.findAll('.workspace-nav-item')
+    expect(wrapper.find('.sidebar .workspace-nav').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('工作区')
+    expect(wrapper.get('[data-sidebar-section-toggle="projects"]').text()).toContain('项目')
+    expect(wrapper.get('[aria-label="更多项目"]').exists()).toBe(true)
+    expect(wrapper.get('[aria-label="快速新建项目"]').exists()).toBe(true)
+    const knowledgeNavigation = wrapper.get('.knowledge-nav-item')
+    expect(knowledgeNavigation.text()).toBe('知识库')
+    expect(knowledgeNavigation.find('svg').exists()).toBe(true)
 
-    expect(workspaceNav.text()).toContain('工作区')
-    expect(workspaceItems.map((item) => item.text())).toEqual(['项目', '知识库'])
-    expect(workspaceItems.every((item) => item.find('svg').exists())).toBe(true)
-    expect(workspaceNav.text()).not.toContain('对话')
-    expect(workspaceItems.some((item) => item.attributes('aria-current'))).toBe(false)
-
-    await workspaceItems[0].trigger('click')
-    await workspaceItems[1].trigger('click')
+    await wrapper.get('[aria-label="更多项目"]').trigger('click')
+    await knowledgeNavigation.trigger('click')
 
     expect(routerMock.push).toHaveBeenNthCalledWith(1, '/projects')
     expect(routerMock.push).toHaveBeenNthCalledWith(2, '/knowledge')
   })
 
-  it('项目入口属于工作区导航而非底部小按钮', async () => {
+  it('project plus action routes to the existing quick-create flow', async () => {
     listConversations.mockResolvedValue([])
     const wrapper = await mountChat()
 
-    expect(wrapper.get('.workspace-project-nav').text()).toContain('项目')
-    expect(wrapper.find('.sidebar-footer .workspace-project-nav').exists()).toBe(false)
-    expect(wrapper.find('.sidebar-footer .project-nav-btn').exists()).toBe(false)
+    await wrapper.get('[aria-label="快速新建项目"]').trigger('click')
+
+    expect(routerMock.push).toHaveBeenCalledWith({ path: '/projects', query: { create: '1' } })
   })
 
   it('底部显示当前用户、主题切换和退出登录', async () => {
@@ -157,32 +161,22 @@ describe('ChatView', () => {
     const wrapper = await mountChat()
 
     const footer = wrapper.get('.sidebar-footer')
+    expect(footer.get('.footer-account-row').text()).toContain('当前用户')
     expect(footer.get('.footer-username').text()).toBe('alice')
+    expect(footer.get('.footer-settings-row').text()).toContain('设置 / 主题')
     expect(footer.find('.theme-toggle').exists()).toBe(true)
     expect(footer.get('.logout-btn').text()).toBe('退出登录')
   })
 
-  it('sidebar 工作区显示知识库入口且点击跳转知识库', async () => {
+  it('sidebar 独立知识库入口点击跳转知识库', async () => {
     listConversations.mockResolvedValue([])
     const wrapper = await mountChat()
 
-    const knowledgeButton = wrapper.findAll('.sidebar .workspace-nav-item')[1]
+    const knowledgeButton = wrapper.get('.sidebar .knowledge-nav-item')
     expect(knowledgeButton.text()).toBe('知识库')
     await knowledgeButton.trigger('click')
 
     expect(routerMock.push).toHaveBeenCalledWith('/knowledge')
-  })
-
-  it('sidebar 工作区显示项目入口并跳转到项目列表', async () => {
-    listConversations.mockResolvedValue([])
-    const wrapper = await mountChat()
-
-    const projectButton = wrapper.find('.sidebar .workspace-project-nav')
-    expect(projectButton.text()).toContain('项目')
-    expect(projectButton.find('svg').exists()).toBe(true)
-    await projectButton.trigger('click')
-
-    expect(routerMock.push).toHaveBeenCalledWith('/projects')
   })
 
   it('shows a restrained project context bar for /chat?project_id=', async () => {
@@ -194,6 +188,22 @@ describe('ChatView', () => {
     expect(wrapper.get('.project-context-bar').text()).toContain('当前项目：产品发布')
     await wrapper.get('.project-context-bar button').trigger('click')
     expect(routerMock.push).toHaveBeenCalledWith({ name: 'project-detail', params: { id: '7' } })
+  })
+
+  it('clears routed project context when selecting an unassigned conversation', async () => {
+    routeMock.query = { project_id: '7' }
+    listConversations.mockResolvedValue([
+      { id: 1, title: '独立会话', project_id: null },
+    ])
+    listProjects.mockResolvedValue([{ id: 7, name: '产品发布' }])
+    listMessages.mockResolvedValue([])
+    const wrapper = await mountChat()
+
+    expect(wrapper.find('.project-context-bar').exists()).toBe(true)
+    await wrapper.get('.conversation-item').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.project-context-bar').exists()).toBe(false)
   })
 
   it('creates a conversation under the active project context', async () => {
@@ -215,6 +225,120 @@ describe('ChatView', () => {
     expect(wrapper.get('.more-projects-link').text()).toContain('更多')
   })
 
+  it('keeps the collapsible pinned group visible when it is empty', async () => {
+    listConversations.mockResolvedValue([])
+    const wrapper = await mountChat()
+
+    const pinnedToggle = wrapper.get('[data-sidebar-section-toggle="pinned"]')
+    expect(pinnedToggle.attributes('aria-expanded')).toBe('true')
+    expect(wrapper.get('.pinned-section').text()).toContain('暂无置顶')
+  })
+
+  it('renders pinned conversations and projects in a distinct section', async () => {
+    listConversations.mockResolvedValue([
+      { id: 1, title: '置顶会话', project_id: 7, pinned: true },
+      { id: 2, title: '普通会话', pinned: false },
+    ])
+    listProjects.mockResolvedValue([
+      { id: 7, name: '置顶项目', pinned: true, conversation_count: 3, document_count: 2 },
+      { id: 8, name: '普通项目', pinned: false },
+    ])
+    const wrapper = await mountChat()
+
+    const pinned = wrapper.get('.pinned-section')
+    expect(pinned.text()).toContain('置顶会话')
+    expect(pinned.text()).toContain('置顶项目')
+    expect(pinned.text()).not.toContain('普通会话')
+    expect(pinned.text()).not.toContain('普通项目')
+    expect(pinned.find('.pinned-conversation-entry svg').exists()).toBe(true)
+    expect(pinned.find('.pinned-project-entry svg').exists()).toBe(true)
+    expect(wrapper.get('.conversation-list').text()).toContain('普通会话')
+    expect(wrapper.get('.conversation-list').text()).not.toContain('置顶会话')
+
+    await pinned.get('.pinned-project-entry').trigger('click')
+    expect(routerMock.push).toHaveBeenCalledWith({ name: 'project-detail', params: { id: 7 } })
+  })
+
+  it('pins and unpins a conversation through its operation menu', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: '待置顶会话', pinned: false }])
+    updateConversation
+      .mockResolvedValueOnce({ id: 1, title: '待置顶会话', pinned: true })
+      .mockResolvedValueOnce({ id: 1, title: '待置顶会话', pinned: false })
+    const wrapper = await mountChat()
+
+    await wrapper.get('.conversation-more').trigger('click')
+    await wrapper.findAll('.conversation-menu button')[2].trigger('click')
+    await flushPromises()
+
+    expect(updateConversation).toHaveBeenLastCalledWith(1, { pinned: true })
+    expect(wrapper.get('.pinned-section').text()).toContain('待置顶会话')
+
+    await wrapper.get('[aria-label="取消置顶会话：待置顶会话"]').trigger('click')
+    await flushPromises()
+
+    expect(updateConversation).toHaveBeenLastCalledWith(1, { pinned: false })
+    expect(wrapper.get('.pinned-section').text()).toContain('暂无置顶')
+  })
+
+  it('pins and unpins a recent project with updateProject', async () => {
+    listConversations.mockResolvedValue([])
+    listProjects.mockResolvedValue([{ id: 7, name: '产品发布', pinned: false }])
+    updateProject
+      .mockResolvedValueOnce({ id: 7, name: '产品发布', pinned: true })
+      .mockResolvedValueOnce({ id: 7, name: '产品发布', pinned: false })
+    const wrapper = await mountChat()
+
+    await wrapper.get('.project-pin-toggle').trigger('click')
+    await flushPromises()
+    expect(updateProject).toHaveBeenLastCalledWith(7, { pinned: true })
+    expect(wrapper.get('.pinned-project-entry').text()).toContain('产品发布')
+
+    await wrapper.get('[aria-label="取消置顶项目：产品发布"]').trigger('click')
+    await flushPromises()
+    expect(updateProject).toHaveBeenLastCalledWith(7, { pinned: false })
+    expect(wrapper.get('.pinned-section').text()).toContain('暂无置顶')
+  })
+
+  it('persists collapsed sidebar groups in localStorage', async () => {
+    listConversations.mockResolvedValue([])
+    const wrapper = await mountChat()
+    const toggle = wrapper.get('[data-sidebar-section-toggle="projects"]')
+
+    await toggle.trigger('click')
+
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(wrapper.get('.recent-projects').element.style.display).toBe('none')
+    expect(JSON.parse(localStorage.getItem('omnixa.sidebar.collapsed'))).toMatchObject({ projects: true })
+    wrapper.unmount()
+
+    const restored = await mountChat()
+    expect(restored.get('[data-sidebar-section-toggle="projects"]').attributes('aria-expanded')).toBe('false')
+    expect(restored.get('.recent-projects').element.style.display).toBe('none')
+  })
+
+  it('labels conversations with their project and shows project counts', async () => {
+    listConversations.mockResolvedValue([{ id: 1, title: '发布讨论', project_id: 7 }])
+    listProjects.mockResolvedValue([
+      { id: 7, name: '产品发布', conversation_count: 3, document_count: 2 },
+    ])
+    const wrapper = await mountChat()
+
+    expect(wrapper.get('.conversation-project-tag').text()).toBe('产品发布')
+    expect(wrapper.get('.recent-project-link').text()).toContain('3 会话 · 2 资料')
+  })
+
+  it('marks project navigation and the active recent project with aria-current', async () => {
+    routeMock.path = '/projects/7'
+    routeMock.name = 'project-detail'
+    routeMock.params = { id: '7' }
+    listConversations.mockResolvedValue([])
+    listProjects.mockResolvedValue([{ id: 7, name: '产品发布' }])
+    const wrapper = await mountChat()
+
+    expect(wrapper.get('.recent-project-link').attributes('aria-current')).toBe('page')
+    expect(wrapper.get('.recent-project-link').classes()).toContain('active')
+  })
+
   it('opens the conversation requested by conversation_id in the route query', async () => {
     routeMock.query = { conversation_id: '2' }
     listConversations.mockResolvedValue([{ id: 2, title: '项目对话' }])
@@ -225,13 +349,14 @@ describe('ChatView', () => {
     expect(listMessages).toHaveBeenCalledWith(2)
   })
 
-  it('移动端抽屉 sidebar 内同样显示工作区知识库入口', async () => {
+  it('移动端抽屉 sidebar 内显示独立知识库入口并在跳转后关闭', async () => {
     listConversations.mockResolvedValue([])
     const wrapper = await mountChat()
     await wrapper.find('.menu-btn').trigger('click')
 
     expect(wrapper.find('.sidebar').classes()).toContain('open')
-    expect(wrapper.findAll('.sidebar .workspace-nav-item')[1].text()).toBe('知识库')
+    await wrapper.get('.sidebar .knowledge-nav-item').trigger('click')
+    expect(wrapper.find('.sidebar').classes()).not.toContain('open')
   })
 
   it('加载 conversation list', async () => {
@@ -241,6 +366,9 @@ describe('ChatView', () => {
 
     expect(listConversations).toHaveBeenCalledTimes(1)
     expect(wrapper.text()).toContain('会话一')
+    const icon = wrapper.get('.conversation-item .conversation-icon')
+    expect(icon.attributes('viewBox')).toBe('0 0 24 24')
+    expect(icon.find('path').exists()).toBe(true)
   })
 
   it('切换 conversation 加载 messages', async () => {
@@ -496,7 +624,8 @@ describe('ChatView', () => {
     expect(wrapper.find('.empty-title').text()).toBe('今天想做些什么？')
     expect(wrapper.find('.composer-wrap').classes()).toContain('is-idle')
     expect(wrapper.find('.composer-wrap.is-idle .composer').exists()).toBe(true)
-    const prompts = wrapper.findAll('.suggestion-card')
+    const promptGrid = wrapper.get('.idle-prompt-rows')
+    const prompts = promptGrid.findAll('.suggestion-card')
     expect(prompts).toHaveLength(4)
     expect(wrapper.find('.empty-title').text()).not.toMatch(/\p{Extended_Pictographic}/u)
     expect(prompts.map((prompt) => prompt.text()).join('')).not.toMatch(/\p{Extended_Pictographic}/u)
@@ -519,7 +648,7 @@ describe('ChatView', () => {
     expect(streamChat).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 7 }))
   })
 
-  it('suggestion 点击可填充输入框', async () => {
+  it('suggestion 点击可填入完整问题且不会自动发送', async () => {
     listConversations.mockResolvedValue([{ id: 1, title: '会话一' }])
     listMessages.mockResolvedValue([])
 
@@ -528,7 +657,10 @@ describe('ChatView', () => {
 
     await wrapper.findAll('.suggestion-card')[0].trigger('click')
 
-    expect(wrapper.find('.composer-input').element.value).toBe('帮我解释一段代码')
+    expect(wrapper.find('.composer-input').element.value).toBe('这段代码是什么意思？')
+    expect(createConversation).not.toHaveBeenCalled()
+    expect(streamChat).not.toHaveBeenCalled()
+    expect(streamAgent).not.toHaveBeenCalled()
   })
 
   it('stopped 状态显示在消息附近', async () => {
@@ -587,6 +719,38 @@ describe('ChatView', () => {
     await wrapper.find('.menu-btn').trigger('click')
 
     expect(wrapper.find('.sidebar').classes()).toContain('open')
+  })
+
+  it('exposes the mobile drawer as a modal dialog, inerts main, and traps focus', async () => {
+    vi.stubGlobal('matchMedia', vi.fn((query) => ({
+      matches: query === '(max-width: 768px)',
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })))
+    listConversations.mockResolvedValue([])
+    const wrapper = mount(ChatView, { attachTo: document.body })
+    await flushPromises()
+
+    await wrapper.get('.menu-btn').trigger('click')
+    await wrapper.vm.$nextTick()
+
+    const sidebar = wrapper.get('.sidebar')
+    expect(sidebar.attributes('role')).toBe('dialog')
+    expect(sidebar.attributes('aria-modal')).toBe('true')
+    expect(wrapper.get('.main').attributes()).toHaveProperty('inert')
+    expect(wrapper.get('.backdrop').element.tabIndex).toBe(0)
+
+    wrapper.get('.logout-btn').element.focus()
+    await sidebar.trigger('keydown', { key: 'Tab' })
+    expect(document.activeElement).toBe(wrapper.get('.new-btn').element)
+
+    await sidebar.trigger('keydown', { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(wrapper.get('.logout-btn').element)
+
+    await wrapper.get('.backdrop').trigger('click')
+    expect(wrapper.find('.backdrop').exists()).toBe(false)
+    expect(wrapper.get('.main').attributes()).not.toHaveProperty('inert')
+    wrapper.unmount()
   })
 
   it('moves focus into the chat composer after selecting a drawer conversation', async () => {
@@ -748,21 +912,38 @@ describe('ChatView', () => {
     const wrapper = await mountChat()
     await openFirstConversation(wrapper)
 
+    const expectedSuggestions = {
+      chat: [
+        '这段代码是什么意思？',
+        '我应该怎么规划这个项目？',
+        '这段内容可以怎么总结？',
+        '这个报错应该怎么解决？',
+      ],
+      rag: [
+        '这份资料主要讲了什么？',
+        '资料中有哪些关键结论？',
+        '资料里的不同方案有什么区别？',
+        '根据这些资料，我下一步应该怎么做？',
+      ],
+      agent: [
+        '帮我比较这两个方案，并给出下一步建议',
+        '把这个目标拆成可执行的步骤',
+        '分析手头资料后，列出需要确认的风险点',
+        '制定一个从现状到目标的行动计划',
+      ],
+    }
+
+    expect(wrapper.findAll('.suggestion-card').map((card) => card.text())).toEqual(expectedSuggestions.chat)
+
     await chooseCapability(wrapper, 'rag')
-    expect(wrapper.findAll('.suggestion-card').map((card) => card.text())).toEqual([
-      '基于资料总结',
-      '对比资料中的方案',
-    ])
+    expect(wrapper.findAll('.suggestion-card').map((card) => card.text())).toEqual(expectedSuggestions.rag)
     expect(wrapper.find('.empty-knowledge-link').text()).toBe('前往添加资料')
     await wrapper.findAll('.suggestion-card')[0].trigger('click')
-    expect(wrapper.find('.composer-input').element.value).toBe('基于资料总结')
+    expect(wrapper.find('.composer-input').element.value).toBe('这份资料主要讲了什么？')
     expect(streamChat).not.toHaveBeenCalled()
 
     await chooseCapability(wrapper, 'agent')
-    expect(wrapper.findAll('.suggestion-card').map((card) => card.text())).toEqual([
-      '比较方案并给出下一步',
-      '把目标拆成可执行步骤',
-    ])
+    expect(wrapper.findAll('.suggestion-card').map((card) => card.text())).toEqual(expectedSuggestions.agent)
   })
 
   it('uses an inward-breathing composer state and leaves it off while typing', async () => {
@@ -1047,7 +1228,7 @@ describe('ChatView', () => {
     await wrapper.find('.conversation-more').trigger('click')
 
     expect(wrapper.find('.conversation-menu').exists()).toBe(true)
-    expect(wrapper.findAll('.conversation-menu button')).toHaveLength(2)
+    expect(wrapper.findAll('.conversation-menu button')).toHaveLength(3)
   })
 
   it('closes the operation menu when clicking outside', async () => {
@@ -1579,6 +1760,13 @@ describe('ChatView conversation management contract', () => {
     vi.clearAllMocks()
     vi.unstubAllGlobals()
     authStore.user = { username: 'alice' }
+    routeMock.path = '/chat'
+    routeMock.name = 'chat'
+    routeMock.params = {}
+    routeMock.query = {}
+    localStorage.removeItem('omnixa.sidebar.collapsed')
+    listDocuments.mockResolvedValue([])
+    listProjects.mockResolvedValue([])
   })
 
   it('shows a conversation-list loading state while the first request is pending', async () => {

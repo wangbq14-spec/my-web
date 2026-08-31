@@ -1,6 +1,7 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from app.models.document import Document, DocumentChunk
+from app.models.project import Project
 from app.schemas.document import DocumentOut
 from app.services.document import (
     claim_document,
@@ -104,6 +105,29 @@ def test_mark_ready_publishes_generation_and_removes_older_chunks(db):
     assert [chunk.generation for chunk in document_chunks(db, document.id)] == [2]
 
 
+def test_mark_ready_touches_owning_project(db):
+    project = Project(user_id=1, name="project")
+    db.add(project)
+    db.flush()
+    document = _document(
+        project_id=project.id,
+        status="processing",
+        processing_token="token-1",
+        processing_generation=1,
+    )
+    db.add(document)
+    db.commit()
+    old_activity = datetime(2020, 1, 1, 0, 0, 0)
+    project.last_activity_at = old_activity
+    db.commit()
+
+    assert mark_ready(db, document.id, 1, "token-1", 1) is True
+    db.commit()
+
+    db.refresh(project)
+    assert project.last_activity_at > old_activity
+
+
 def test_mark_ready_rejects_wrong_token_or_generation(db):
     document = _document(
         status="processing", processing_token="token-1", processing_generation=2
@@ -196,6 +220,39 @@ def test_mark_failed_terminally_removes_staging_chunks(db):
     assert document.error_message == "could not parse"
     assert document.processing_token is None
     assert document_chunks(db, document.id) == []
+
+
+def test_terminal_failure_touches_owning_project(db):
+    project = Project(user_id=1, name="project")
+    db.add(project)
+    db.flush()
+    document = _document(
+        project_id=project.id,
+        status="processing",
+        processing_token="token-1",
+    )
+    db.add(document)
+    db.commit()
+    old_activity = datetime(2020, 1, 1, 0, 0, 0)
+    project.last_activity_at = old_activity
+    db.commit()
+
+    result = mark_failed(
+        db,
+        document.id,
+        1,
+        "parse_error",
+        "could not parse",
+        False,
+        3,
+        10,
+        60,
+    )
+    db.commit()
+
+    assert result == "failed"
+    db.refresh(project)
+    assert project.last_activity_at > old_activity
 
 
 def test_manual_retry_only_transitions_failed_document_once(db):
