@@ -1,5 +1,7 @@
 <script setup>
 import { useRouter } from 'vue-router'
+import BrandIdentity from '../components/BrandIdentity.vue'
+import ThemeToggle from '../components/ThemeToggle.vue'
 import { useAuthStore } from '../stores/auth'
 
 const router = useRouter()
@@ -15,15 +17,18 @@ function handleLogout() {
   <div class="dashboard-page">
     <header class="topbar">
       <span class="brand">
-        智行 AI 控制台
+        <BrandIdentity variant="compact" />
       </span>
-      <button
-        type="button"
-        class="logout"
-        @click="handleLogout"
-      >
-        退出登录
-      </button>
+      <div class="topbar-actions">
+        <ThemeToggle />
+        <button
+          type="button"
+          class="logout"
+          @click="handleLogout"
+        >
+          退出登录
+        </button>
+      </div>
     </header>
 
     <main class="content">
@@ -54,71 +59,83 @@ function handleLogout() {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  background: #f6f7fb;
-  color: #1a1a2e;
+  background: var(--color-bg);
+  color: var(--color-text-primary);
 }
 
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 24px;
-  background: #fff;
-  border-bottom: 1px solid #eef0f4;
+  padding: var(--space-4) var(--space-6);
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .brand {
-  font-weight: 700;
-  font-size: 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 600;
+  font-size: var(--text-md);
 }
 
+
 .logout {
-  padding: 8px 18px;
-  border: 1px solid #e5e7eb;
-  border-radius: 999px;
-  background: #fff;
-  color: #1a1a2e;
-  font-size: 14px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
   font-family: inherit;
   cursor: pointer;
-  transition: border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
+  transition: border-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard), background var(--duration-fast) var(--ease-standard);
 }
 
 .logout:hover {
-  border-color: #4f46e5;
-  color: #4f46e5;
-  background: rgba(79, 70, 229, 0.06);
+  border-color: var(--color-border-strong);
+  color: var(--color-accent);
+  background: var(--color-surface-hover);
 }
 
 .content {
   flex: 1;
   width: min(720px, 100%);
   margin: 0 auto;
-  padding: 40px 24px;
+  padding: var(--space-10) var(--space-6);
   box-sizing: border-box;
 }
 
 .heading {
   margin: 0 0 8px;
-  font-size: 30px;
+  font-size: var(--text-page-title);
   letter-spacing: -0.5px;
 }
 
 .hint {
   margin: 0 0 32px;
-  color: #6b7280;
+  color: var(--color-text-secondary);
 }
 
 .profile {
-  padding: 24px;
-  border-radius: 16px;
-  background: #fff;
-  border: 1px solid #eef0f4;
+  padding: var(--space-6);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-subtle);
 }
 
 .profile-title {
   margin: 0 0 16px;
-  font-size: 18px;
+  font-size: var(--text-section-title);
 }
 
 .list {
@@ -129,12 +146,12 @@ function handleLogout() {
 }
 
 .list dt {
-  color: #6b7280;
-  font-size: 14px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
 }
 
 .list dd {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--text-base);
 }
 </style>

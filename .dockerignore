@@ -1,0 +1,14 @@
+.git
+.env
+backend/.env
+node_modules
+backend/.venv
+backend/.uv-cache
+dist
+qa-artifacts
+test-results
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
+**/tests
+*.log

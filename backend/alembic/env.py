@@ -11,7 +11,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 from app.core.config import settings  # noqa: E402
 from app.db.base import Base  # noqa: E402
-from app.models import user  # noqa: F401, E402
+from app.models import document, user  # noqa: F401, E402
 
 config = context.config
 

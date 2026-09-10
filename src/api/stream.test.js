@@ -1,0 +1,321 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { streamAgent, streamChat, streamRegenerate } from './stream'
+
+function encode(text) {
+  return new TextEncoder().encode(text)
+}
+
+function createFakeStream(chunks) {
+  const encoded = chunks.map(encode)
+  let i = 0
+  return {
+    ok: true,
+    status: 200,
+    async json() {
+      return {}
+    },
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (i < encoded.length) {
+              return { done: false, value: encoded[i++] }
+            }
+            return { done: true, value: undefined }
+          },
+        }
+      },
+    },
+  }
+}
+
+describe('streamChat', () => {
+  it.each([streamChat, streamAgent])('includes uploaded attachment IDs', async (stream) => {
+    const fetchMock = vi.fn().mockResolvedValue(createFakeStream([]))
+    vi.stubGlobal('fetch', fetchMock)
+    await stream({ conversationId: 1, content: '', attachmentIds: [12, 13], useRag: true })
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).attachment_ids).toEqual([12, 13])
+  })
+  beforeEach(() => {
+    localStorage.clear()
+    localStorage.setItem('access_token', 'test-token')
+    vi.unstubAllGlobals()
+  })
+
+  it('使用 POST 且 body 正确', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(createFakeStream(['event: done\ndata: {}\n\n']))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await streamChat({ conversationId: 1, content: '你好' })
+
+    const [url, options] = fetchMock.mock.calls[0]
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(url).toContain('/conversations/1/chat/stream')
+    expect(options.method).toBe('POST')
+    expect(JSON.parse(options.body)).toEqual({ content: '你好', model_tier: 'auto' })
+  })
+
+  it('带 Authorization header', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(createFakeStream(['event: done\ndata: {}\n\n']))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await streamChat({ conversationId: 1, content: 'hi' })
+
+    const [, options] = fetchMock.mock.calls[0]
+    expect(options.headers.Authorization).toBe('Bearer test-token')
+  })
+
+  it('start/delta/done callbacks 正确触发', async () => {
+    const sse =
+      'event: start\ndata: {"conversation_id":1}\n\n' +
+      'event: delta\ndata: {"content":"你"}\n\n' +
+      'event: delta\ndata: {"content":"好"}\n\n' +
+      'event: done\ndata: {"user_message_id":1,"assistant_message_id":2}\n\n'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(createFakeStream([sse])))
+
+    const onStart = vi.fn()
+    const onDelta = vi.fn()
+    const onDone = vi.fn()
+
+    await streamChat({ conversationId: 1, content: 'hi', onStart, onDelta, onDone })
+
+    expect(onStart).toHaveBeenCalledWith({ conversation_id: 1 })
+    expect(onDelta.mock.calls.map((c) => c[0].content)).toEqual(['你', '好'])
+    expect(onDone).toHaveBeenCalledWith({
+      user_message_id: 1,
+      assistant_message_id: 2,
+    })
+  })
+
+  it('sources 事件触发 onSources', async () => {
+    const sse =
+      'event: sources\ndata: {"sources":[{"document_id":1,"filename":"handbook.pdf","chunk_index":3,"score":0.82,"excerpt":"relevant text"}]}\n\n'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(createFakeStream([sse])))
+    const onSources = vi.fn()
+
+    await streamChat({ conversationId: 1, content: 'hi', onSources })
+
+    expect(onSources).toHaveBeenCalledWith({
+      sources: [
+        {
+          document_id: 1,
+          filename: 'handbook.pdf',
+          chunk_index: 3,
+          score: 0.82,
+          excerpt: 'relevant text',
+        },
+      ],
+    })
+  })
+
+  it('useRag=true 时 body 包含 use_rag 和 top_k', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(createFakeStream(['event: done\ndata: {}\n\n']))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await streamChat({ conversationId: 1, content: 'hi', useRag: true, topK: 8 })
+
+    const [, options] = fetchMock.mock.calls[0]
+    expect(JSON.parse(options.body)).toEqual({
+      content: 'hi',
+      use_rag: true,
+      top_k: 8,
+      model_tier: 'auto',
+    })
+  })
+
+  it('forwards an explicitly selected model tier', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(createFakeStream(['event: done\ndata: {}\n\n']))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await streamChat({ conversationId: 1, content: 'hi', modelTier: 'reasoning' })
+
+    const [, options] = fetchMock.mock.calls[0]
+    expect(JSON.parse(options.body)).toEqual({ content: 'hi', model_tier: 'reasoning' })
+  })
+
+  it('error event 正确转换', async () => {
+    const sse = 'event: error\ndata: {"code":"upstream_error","message":"boom"}\n\n'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(createFakeStream([sse])))
+
+    const onError = vi.fn()
+    await streamChat({ conversationId: 1, content: 'hi', onError })
+
+    expect(onError).toHaveBeenCalledWith({
+      type: 'stream',
+      code: 'upstream_error',
+      message: 'boom',
+    })
+  })
+
+  it('HTTP 非 2xx 走 http error', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        async json() {
+          return { detail: '会话不存在' }
+        },
+      }),
+    )
+
+    const onError = vi.fn()
+    await streamChat({ conversationId: 1, content: 'hi', onError })
+
+    expect(onError).toHaveBeenCalledWith({
+      type: 'http',
+      status: 404,
+      message: '会话不存在',
+    })
+  })
+
+  it('422 validation error surfaces a clean message, not raw JSON', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 422,
+        async json() {
+          return { detail: [{ type: 'value_error', msg: '请输入内容或添加图片。' }] }
+        },
+      }),
+    )
+
+    const onError = vi.fn()
+    await streamChat({ conversationId: 1, content: '', onError })
+
+    expect(onError).toHaveBeenCalledWith({
+      type: 'http',
+      status: 422,
+      message: '请输入内容或添加图片。',
+    })
+  })
+
+  it('AbortError 不转换为 upstream error', async () => {
+    const abortError = new Error('aborted')
+    abortError.name = 'AbortError'
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abortError))
+
+    const onError = vi.fn()
+    await streamChat({ conversationId: 1, content: 'hi', onError })
+
+    expect(onError).toHaveBeenCalledWith({ type: 'abort', message: '已停止生成' })
+  })
+})
+
+describe('streamRegenerate', () => {
+  it('posts without a body and dispatches done data', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      createFakeStream(['event: done\ndata: {"assistant_message_id":2,"model":"m"}\n\n']),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const onDone = vi.fn()
+
+    await streamRegenerate({ conversationId: 1, onDone })
+
+    const [url, options] = fetchMock.mock.calls[0]
+    expect(url).toContain('/conversations/1/regenerate/stream')
+    expect(options.body).toBeUndefined()
+    expect(onDone).toHaveBeenCalledWith({ assistant_message_id: 2, model: 'm' })
+  })
+})
+
+describe('streamAgent', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    localStorage.setItem('access_token', 'test-token')
+    vi.unstubAllGlobals()
+  })
+
+  it('posts content to the agent stream with authorization', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(createFakeStream(['event: done\ndata: {}\n\n']))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await streamAgent({ conversationId: 1, content: 'research this' })
+
+    const [url, options] = fetchMock.mock.calls[0]
+    expect(url).toContain('/conversations/1/agent/stream')
+    expect(options.method).toBe('POST')
+    expect(options.body).toBe(JSON.stringify({ content: 'research this', model_tier: 'auto' }))
+    expect(options.headers.Authorization).toBe('Bearer test-token')
+  })
+
+  it('dispatches agent events in stream order', async () => {
+    const sse =
+      'event: start\ndata: {"conversation_id":1}\n\n' +
+      'event: agent_step\ndata: {"step":"Planning"}\n\n' +
+      'event: tool_start\ndata: {"tool_call_id":"call-1","name":"search"}\n\n' +
+      'event: tool_result\ndata: {"tool_call_id":"call-1","name":"search","success":true,"summary":"Found results"}\n\n' +
+      'event: delta\ndata: {"content":"Hello "}\n\n' +
+      'event: delta\ndata: {"content":"world"}\n\n' +
+      'event: done\ndata: {"user_message_id":1,"assistant_message_id":2,"model":"agent-model"}\n\n'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(createFakeStream([sse])))
+
+    const calls = []
+    const onStart = vi.fn(() => calls.push('start'))
+    const onAgentStep = vi.fn(() => calls.push('agent_step'))
+    const onToolStart = vi.fn(() => calls.push('tool_start'))
+    const onToolResult = vi.fn(() => calls.push('tool_result'))
+    const onDelta = vi.fn(() => calls.push('delta'))
+    const onDone = vi.fn(() => calls.push('done'))
+
+    await streamAgent({
+      conversationId: 1,
+      content: 'research this',
+      onStart,
+      onAgentStep,
+      onToolStart,
+      onToolResult,
+      onDelta,
+      onDone,
+    })
+
+    expect(calls).toEqual([
+      'start',
+      'agent_step',
+      'tool_start',
+      'tool_result',
+      'delta',
+      'delta',
+      'done',
+    ])
+    expect(onAgentStep).toHaveBeenCalledWith({ step: 'Planning' })
+    expect(onToolStart).toHaveBeenCalledWith({ tool_call_id: 'call-1', name: 'search' })
+    expect(onToolResult).toHaveBeenCalledWith({
+      tool_call_id: 'call-1',
+      name: 'search',
+      success: true,
+      summary: 'Found results',
+    })
+    expect(onDelta.mock.calls.map(([event]) => event.content).join('')).toBe('Hello world')
+    expect(onDone).toHaveBeenCalledWith({
+      user_message_id: 1,
+      assistant_message_id: 2,
+      model: 'agent-model',
+    })
+  })
+
+  it('converts error events to stream errors', async () => {
+    const sse = 'event: error\ndata: {"code":"tool_failed","message":"Search failed"}\n\n'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(createFakeStream([sse])))
+    const onError = vi.fn()
+
+    await streamAgent({ conversationId: 1, content: 'research this', onError })
+
+    expect(onError).toHaveBeenCalledWith({
+      type: 'stream',
+      code: 'tool_failed',
+      message: 'Search failed',
+    })
+  })
+})
