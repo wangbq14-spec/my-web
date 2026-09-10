@@ -38,7 +38,12 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
-backend/data/
+# Runtime data + QA/maintenance artifacts are ignored, but the production
+# admin-bootstrap script (exercised by tests/test_create_admin.py) is tracked.
+backend/data/*
+!backend/data/maintenance/
+backend/data/maintenance/*
+!backend/data/maintenance/create_admin.py
 
 # Compose secrets (never commit).
 .env
