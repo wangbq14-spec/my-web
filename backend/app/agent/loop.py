@@ -9,11 +9,13 @@ from sqlalchemy.orm import Session
 from app.agent.base import ToolContext, ToolResult
 from app.agent.registry import ToolRegistry
 from app.llm.base import LLMMessage, LLMProvider
+from app.llm.registry import ModelTier, resolve_model
 from app.models.message import Message
 from app.models.user import utcnow_naive
 from app.services.conversation import get_conversation
 from app.services.project import build_project_system_prompt, touch_project_activity
 from app.services.title import maybe_auto_title
+from app.services.billing import charge_response
 
 
 @dataclass
@@ -49,6 +51,7 @@ def run_agent(
     provider: LLMProvider,
     model: str | None,
     max_steps: int,
+    model_tier: ModelTier = "auto",
 ) -> Iterator[AgentEvent]:
     """Run a bounded, in-memory tool loop without committing the transaction."""
 
@@ -82,10 +85,12 @@ def run_agent(
     )) is not None:
         messages = [LLMMessage(role="system", content=system_prompt)] + messages
     tools = registry.to_llm_schema()
+    resolved_model = resolve_model(model_tier, model or conversation.model)
 
     for step in range(1, max_steps + 1):
         yield AgentEvent(type="agent_step", step=step)
-        response = provider.complete(messages, model=model, tools=tools)
+        response = provider.complete(messages, model=resolved_model, tools=tools)
+        charge_response(session, user_id, response, model_tier, "agent step", kind="agent")
 
         if response.tool_calls:
             messages.append(
@@ -159,7 +164,7 @@ def run_agent(
             conversation_id=conversation_id,
             role="assistant",
             content=final_content,
-            model=response.model,
+            model=response.model or resolved_model,
         )
         session.add(assistant_message)
         session.flush()

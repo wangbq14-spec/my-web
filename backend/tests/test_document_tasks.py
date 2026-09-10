@@ -101,7 +101,7 @@ def test_rq_dispatcher_payload_contains_only_document_id(monkeypatch):
 
     monkeypatch.setattr(
         "app.services.document_tasks.redis.Redis.from_url",
-        lambda _url: "redis-connection",
+        lambda _url, **kwargs: "redis-connection",
     )
     monkeypatch.setattr("app.services.document_tasks.Queue", RecordingQueue)
 

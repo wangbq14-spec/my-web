@@ -11,6 +11,7 @@ test('登录后可新建、进入并删除项目', async ({ page }) => {
     status: 200,
     json: { id: 1, username: 'e2e-user', email: 'e2e@example.com' },
   }))
+  await page.route('**/api/conversations', (route) => route.fulfill({ json: [] }))
   await page.route(/\/api\/projects(?:\/\d+)?$/, async (route) => {
     const method = route.request().method()
     const url = new URL(route.request().url())
@@ -99,7 +100,8 @@ test('登录后可新建、进入并删除项目', async ({ page }) => {
   await page.getByRole('button', { name: '移入本项目' }).click()
   await expect(page.getByRole('button', { name: '移出项目' })).toBeVisible()
 
-  await page.getByRole('button', { name: '返回项目' }).click()
+  await page.getByLabel('更多项目', { exact: true }).click()
+  await expect(page).toHaveURL(/\/projects$/)
   await projectRow.getByRole('button', { name: '删除', exact: true }).click()
   await page.getByRole('dialog').getByRole('button', { name: '删除项目' }).click()
   await expect(projectRow.getByText('发布准备', { exact: true })).not.toBeVisible()

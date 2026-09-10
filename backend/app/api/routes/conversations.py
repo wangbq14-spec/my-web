@@ -1,9 +1,10 @@
 import json
 from itertools import chain
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.routes.auth import get_current_user
@@ -11,9 +12,11 @@ from app.db.session import get_db
 from app.llm.base import (
     LLMConfigurationError,
     LLMError,
+    LLMImageError,
     LLMTimeoutError,
     LLMUpstreamError,
 )
+from app.llm.registry import VisionNotSupportedError
 from app.models.user import User
 from app.rag.embeddings.base import EmbeddingError
 from app.schemas.chat import ChatRequest, ChatResponse, CitationOut
@@ -22,8 +25,34 @@ from app.schemas.message import MessageCreate, MessageOut
 from app.services import chat as chat_service
 from app.services import conversation as conversation_service
 from app.services import message as message_service
+from app.services.billing import InsufficientCredits, require_balance
 
 router = APIRouter()
+
+_DEADLOCK_ERRNOS = {1205, 1213}  # MySQL lock wait timeout / deadlock
+
+
+def _is_deadlock(exc: BaseException) -> bool:
+    """True for MySQL 1205/1213 'deadlock / lock wait timeout' errors."""
+    if not isinstance(exc, SQLAlchemyError):
+        return False
+    origin = exc.orig
+    args = getattr(origin, "args", ()) or ()
+    return bool(args) and args[0] in _DEADLOCK_ERRNOS
+
+
+def _map_llm_error(exc: LLMError) -> HTTPException:
+    if isinstance(exc, VisionNotSupportedError):
+        return HTTPException(status_code=400, detail=str(exc))
+    if isinstance(exc, LLMConfigurationError):
+        return HTTPException(status_code=503, detail="LLM 服务未配置")
+    if isinstance(exc, LLMTimeoutError):
+        return HTTPException(status_code=504, detail="LLM 请求超时")
+    if isinstance(exc, LLMUpstreamError):
+        return HTTPException(status_code=502, detail="LLM 上游服务错误")
+    if isinstance(exc, LLMImageError):
+        return HTTPException(status_code=400, detail=exc.message)
+    return HTTPException(status_code=502, detail="LLM 服务错误")
 
 
 def _project_not_found() -> HTTPException:
@@ -197,16 +226,6 @@ def list_messages(
     return messages
 
 
-def _map_llm_error(exc: LLMError) -> HTTPException:
-    if isinstance(exc, LLMConfigurationError):
-        return HTTPException(status_code=503, detail="LLM 服务未配置")
-    if isinstance(exc, LLMTimeoutError):
-        return HTTPException(status_code=504, detail="LLM 请求超时")
-    if isinstance(exc, LLMUpstreamError):
-        return HTTPException(status_code=502, detail="LLM 上游服务错误")
-    return HTTPException(status_code=502, detail="LLM 服务错误")
-
-
 @router.post(
     "/{conversation_id}/chat",
     response_model=ChatResponse,
@@ -218,21 +237,38 @@ def chat(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ChatResponse:
-    try:
-        result = chat_service.send_chat_message(
-            session=db,
-            user_id=current_user.id,
-            conversation_id=conversation_id,
-            content=data.content,
-            use_rag=data.use_rag,
-            top_k=data.top_k,
-        )
-    except EmbeddingError as exc:
-        db.rollback()
-        raise HTTPException(status_code=502, detail="知识库检索失败，请稍后重试") from exc
-    except LLMError as exc:
-        db.rollback()
-        raise _map_llm_error(exc) from exc
+    result = None
+    for _attempt in range(3):
+        try:
+            require_balance(db, current_user.id)
+            result = chat_service.send_chat_message(
+                session=db,
+                user_id=current_user.id,
+                conversation_id=conversation_id,
+                content=data.content,
+                use_rag=data.use_rag,
+                top_k=data.top_k,
+                model_tier=data.model_tier,
+                **({"attachment_ids": data.attachment_ids} if data.attachment_ids else {}),
+            )
+            break
+        except OperationalError as exc:
+            db.rollback()
+            if _is_deadlock(exc) and _attempt < 2:
+                continue
+            raise
+        except InsufficientCredits as exc:
+            db.rollback()
+            raise HTTPException(status_code=402, detail="积分不足") from exc
+        except HTTPException:
+            db.rollback()
+            raise
+        except EmbeddingError as exc:
+            db.rollback()
+            raise HTTPException(status_code=502, detail="知识库检索失败，请稍后重试") from exc
+        except LLMError as exc:
+            db.rollback()
+            raise _map_llm_error(exc) from exc
 
     if result is None:
         raise HTTPException(
@@ -257,22 +293,30 @@ def _sse(event: str, payload: dict) -> str:
 
 
 def _stream_error_code(exc: LLMError) -> str:
+    if isinstance(exc, VisionNotSupportedError):
+        return "vision_not_supported"
     if isinstance(exc, LLMConfigurationError):
         return "configuration_error"
     if isinstance(exc, LLMTimeoutError):
         return "timeout"
     if isinstance(exc, LLMUpstreamError):
         return "upstream_error"
+    if isinstance(exc, LLMImageError):
+        return exc.code
     return "llm_error"
 
 
 def _stream_error_message(exc: LLMError) -> str:
+    if isinstance(exc, VisionNotSupportedError):
+        return str(exc)
     if isinstance(exc, LLMConfigurationError):
         return "LLM 服务未配置"
     if isinstance(exc, LLMTimeoutError):
         return "LLM 请求超时"
     if isinstance(exc, LLMUpstreamError):
         return "LLM 上游服务错误"
+    if isinstance(exc, LLMImageError):
+        return exc.message
     return "LLM 服务错误"
 
 
@@ -287,6 +331,7 @@ def chat_stream(
     content = data.content
     use_rag = data.use_rag
     top_k = data.top_k
+    model_tier = data.model_tier
 
     conversation = conversation_service.get_conversation(db, user_id, conversation_id)
     if conversation is None:
@@ -294,20 +339,46 @@ def chat_stream(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="会话不存在",
         )
-
-    stream = chat_service.stream_chat_message(
-        session=db,
-        user_id=user_id,
-        conversation_id=conversation_id,
-        content=content,
-        use_rag=use_rag,
-        top_k=top_k,
-    )
     try:
-        first_event = next(stream)
-    except LLMError as exc:
-        db.rollback()
-        raise _map_llm_error(exc) from exc
+        require_balance(db, user_id)
+    except InsufficientCredits as exc:
+        raise HTTPException(status_code=402, detail="积分不足") from exc
+
+    def build_stream():
+        return chat_service.stream_chat_message(
+            session=db,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            content=content,
+            use_rag=use_rag,
+            top_k=top_k,
+            model_tier=model_tier,
+            **({"attachment_ids": data.attachment_ids} if data.attachment_ids else {}),
+        )
+
+    stream = build_stream()
+    first_event = None
+    for _attempt in range(3):
+        try:
+            first_event = next(stream)
+            break
+        except OperationalError as exc:
+            db.rollback()
+            if _is_deadlock(exc) and _attempt < 2:
+                # MySQL killed this transaction (1205/1213) under concurrent
+                # writes; roll back and re-run the whole stream once or twice.
+                stream = build_stream()
+                continue
+            raise
+        except HTTPException:
+            db.rollback()
+            raise
+        except InsufficientCredits as exc:
+            db.rollback()
+            raise HTTPException(status_code=402, detail="积分不足") from exc
+        except LLMError as exc:
+            db.rollback()
+            raise _map_llm_error(exc) from exc
 
     def event_generator():
         yield _sse("start", {"conversation_id": conversation_id})
@@ -350,6 +421,10 @@ def chat_stream(
                     yield _sse(
                         "error", {"code": "not_found", "message": "会话不存在"}
                     )
+        except InsufficientCredits:
+            yield _sse("error", {"code": "insufficient_credits", "message": "积分不足"})
+        except HTTPException as exc:
+            yield _sse("error", {"code": "attachment_error", "message": str(exc.detail)})
         except LLMError as exc:
             yield _sse(
                 "error",
@@ -374,6 +449,7 @@ def regenerate_stream(
     conversation_id: int,
     use_rag: bool = False,
     top_k: int = Query(default=5, ge=1, le=20),
+    model_tier: Literal["auto", "fast", "standard", "reasoning"] = "auto",
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> StreamingResponse:
@@ -384,6 +460,10 @@ def regenerate_stream(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="会话不存在",
         )
+    try:
+        require_balance(db, user_id)
+    except InsufficientCredits as exc:
+        raise HTTPException(status_code=402, detail="积分不足") from exc
 
     stream = chat_service.regenerate_chat_message(
         db,
@@ -391,9 +471,16 @@ def regenerate_stream(
         conversation_id,
         use_rag=use_rag,
         top_k=top_k,
+        model_tier=model_tier,
     )
     try:
         first_event = next(stream)
+    except HTTPException:
+        db.rollback()
+        raise
+    except InsufficientCredits as exc:
+        db.rollback()
+        raise HTTPException(status_code=402, detail="积分不足") from exc
     except LLMError as exc:
         db.rollback()
         raise _map_llm_error(exc) from exc
@@ -441,6 +528,10 @@ def regenerate_stream(
                     )
                 elif event.type == "not_found":
                     yield _sse("error", {"code": "not_found", "message": "会话不存在"})
+        except InsufficientCredits:
+            yield _sse("error", {"code": "insufficient_credits", "message": "积分不足"})
+        except HTTPException as exc:
+            yield _sse("error", {"code": "attachment_error", "message": str(exc.detail)})
         except LLMError as exc:
             yield _sse(
                 "error",

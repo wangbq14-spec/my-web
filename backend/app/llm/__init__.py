@@ -7,6 +7,7 @@ from app.llm.base import (
     LLMTimeoutError,
     LLMToolCall,
     LLMUpstreamError,
+    LLMUsage,
 )
 from app.llm.factory import get_llm_provider
 from app.llm.openai_compatible import OpenAICompatibleProvider
@@ -14,6 +15,7 @@ from app.llm.openai_compatible import OpenAICompatibleProvider
 __all__ = [
     "LLMMessage",
     "LLMResponse",
+    "LLMUsage",
     "LLMToolCall",
     "LLMProvider",
     "LLMError",

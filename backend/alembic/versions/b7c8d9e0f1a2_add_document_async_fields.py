@@ -18,13 +18,16 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.alter_column(
-        "documents",
-        "status",
-        existing_type=sa.String(length=20),
-        existing_nullable=False,
-        server_default=sa.text("'queued'"),
-    )
+    if op.get_bind().dialect.name == "mysql":
+        # ALTER COLUMN ... SET DEFAULT is not supported by SQLite's ALTER TABLE;
+        # the server default is only enforced by MySQL anyway.
+        op.alter_column(
+            "documents",
+            "status",
+            existing_type=sa.String(length=20),
+            existing_nullable=False,
+            server_default=sa.text("'queued'"),
+        )
     op.add_column("documents", sa.Column("processing_token", sa.String(length=36), nullable=True))
     op.add_column(
         "documents",
@@ -94,10 +97,11 @@ def downgrade() -> None:
     op.drop_column("documents", "active_generation")
     op.drop_column("documents", "processing_generation")
     op.drop_column("documents", "processing_token")
-    op.alter_column(
-        "documents",
-        "status",
-        existing_type=sa.String(length=20),
-        existing_nullable=False,
-        server_default=None,
-    )
+    if op.get_bind().dialect.name == "mysql":
+        op.alter_column(
+            "documents",
+            "status",
+            existing_type=sa.String(length=20),
+            existing_nullable=False,
+            server_default=None,
+        )

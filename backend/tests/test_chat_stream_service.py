@@ -4,6 +4,7 @@ from datetime import datetime
 import pytest
 
 from app.llm.base import LLMChunk, LLMError, LLMUpstreamError
+from app.models.billing import UserWallet
 from app.models.message import Message
 from app.models.user import User
 from app.schemas.conversation import ConversationCreate
@@ -40,6 +41,8 @@ def fake_provider(monkeypatch):
 def _create_user(db, username="alice"):
     user = User(email=f"{username}@example.com", username=username, hashed_password="x")
     db.add(user)
+    db.flush()
+    db.add(UserWallet(user_id=user.id, balance=100000))
     db.flush()
     return user.id
 
@@ -103,24 +106,26 @@ def test_stream_model_from_chunk(db, fake_provider):
     assert assistant.model == "actual-model"
 
 
-def test_stream_conversation_model_override(db, fake_provider):
+def test_stream_ignores_client_conversation_model(db, fake_provider):
     user_id = _create_user(db, "alice")
+    # P1-3: a client-supplied conversation.model must be ignored — the server
+    # resolves from the tier and never forwards the arbitrary string verbatim.
     conv = _create_conversation(db, user_id, model="gpt-4")
     fake_provider.chunks = ["ok"]
 
     list(stream_chat_message(db, user_id, conv.id, "hi"))
 
-    assert fake_provider.calls[0]["model"] == "gpt-4"
+    assert fake_provider.calls[0]["model"] == "test-default-model"
 
 
-def test_stream_model_none_passes_none(db, fake_provider):
+def test_stream_auto_tier_uses_default_model(db, fake_provider):
     user_id = _create_user(db, "alice")
     conv = _create_conversation(db, user_id, model=None)
     fake_provider.chunks = ["ok"]
 
     list(stream_chat_message(db, user_id, conv.id, "hi"))
 
-    assert fake_provider.calls[0]["model"] is None
+    assert fake_provider.calls[0]["model"] == "test-default-model"
 
 
 def test_stream_ownership_not_found(db, fake_provider):

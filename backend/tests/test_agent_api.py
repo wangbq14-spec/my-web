@@ -3,6 +3,7 @@ import json
 import pytest
 from sqlalchemy import select
 
+from app.agent import loop as agent_loop
 from app.api.routes import agent as agent_route
 from app.llm.base import LLMError, LLMResponse, LLMToolCall, LLMUpstreamError
 from app.models.message import Message
@@ -116,6 +117,22 @@ def test_agent_stream_start_step_delta_and_done(client, fake_provider):
         "done",
     ]
     assert events[-1]["data"]["model"] == "fake-agent-model"
+
+
+def test_agent_stream_passes_requested_model_tier(client, fake_provider, monkeypatch):
+    token = _register_and_login(client, "tiered-agent")
+    conversation_id = _create_conversation(client, token)
+    fake_provider.responses = [LLMResponse(content="final", model="fast-model")]
+    monkeypatch.setattr(agent_loop, "resolve_model", lambda tier, explicit: "fast-model")
+
+    response = client.post(
+        f"/api/conversations/{conversation_id}/agent/stream",
+        json={"content": "hi", "model_tier": "fast"},
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 200
+    assert fake_provider.calls[0]["model"] == "fast-model"
 
 
 def test_agent_stream_tool_events_are_safe_and_ordered(client, fake_provider):

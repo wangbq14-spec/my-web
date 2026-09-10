@@ -5,6 +5,7 @@ import pytest
 from app.agent.loop import run_agent
 from app.agent.registry import ToolRegistry
 from app.llm.base import LLMChunk, LLMError, LLMResponse
+from app.models.billing import UserWallet
 from app.models.conversation import Conversation
 from app.models.user import User
 from app.schemas.conversation import ConversationCreate
@@ -33,6 +34,8 @@ class FakeStreamProvider:
 def _create_user(db, username="alice"):
     user = User(email=f"{username}@example.com", username=username, hashed_password="x")
     db.add(user)
+    db.flush()
+    db.add(UserWallet(user_id=user.id, balance=100000))
     db.flush()
     return user.id
 

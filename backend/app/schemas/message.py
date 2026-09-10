@@ -2,6 +2,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.attachment import MessageAttachmentOut
+
 
 class MessageCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -18,3 +20,4 @@ class MessageOut(BaseModel):
     content: str
     model: str | None
     created_at: datetime
+    attachments: list[MessageAttachmentOut] = []

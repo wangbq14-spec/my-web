@@ -11,7 +11,7 @@ from time import perf_counter
 from uuid import uuid4
 
 import redis
-from rq import Queue, Worker, get_current_job
+from rq import Queue, SimpleWorker, get_current_job
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -421,7 +421,7 @@ def _dispatcher_loop(stop_event: threading.Event) -> None:
         stop_event.wait(settings.DOCUMENT_TASK_DISPATCH_INTERVAL_SECONDS)
 
 
-class _DocumentWorker(Worker):
+class _DocumentWorker(SimpleWorker):
     """Propagate RQ's warm shutdown signal to the dispatcher companion."""
 
     def __init__(self, *args, dispatcher_stop_event: threading.Event, **kwargs) -> None:
@@ -450,7 +450,7 @@ def main() -> None:
         return
 
     stop_event = threading.Event()
-    connection = redis.Redis.from_url(settings.REDIS_URL)
+    connection = redis.Redis.from_url(settings.REDIS_URL, protocol=2)
     queue = Queue(settings.DOCUMENT_TASK_QUEUE, connection=connection)
     worker = _DocumentWorker(
         queues=[queue], connection=connection, dispatcher_stop_event=stop_event

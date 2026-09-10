@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  quality:
+  frontend:
     runs-on: ubuntu-latest
 
     steps:
@@ -28,3 +28,90 @@ jobs:
 
       - name: Run quality gate
         run: npm run quality
+
+  backend:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync --extra test --frozen
+
+      - name: Run backend tests
+        working-directory: backend
+        env:
+          JWT_SECRET_KEY: test-only-secret-key-not-for-production
+          DATABASE_URL: "sqlite+pysqlite:///:memory:"
+          LLM_MODEL: test-default-model
+        run: uv run pytest -q
+
+  migrations:
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: my_web
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync --frozen
+
+      - name: Assert a single migration head
+        working-directory: backend
+        env:
+          JWT_SECRET_KEY: test-only-secret-key-not-for-production
+          DATABASE_URL: "mysql+pymysql://root:root@127.0.0.1:3306/my_web"
+          LLM_MODEL: test-default-model
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uv run alembic heads | grep -c .)" -eq 1
+
+      - name: Upgrade a fresh MySQL database
+        working-directory: backend
+        env:
+          JWT_SECRET_KEY: test-only-secret-key-not-for-production
+          DATABASE_URL: "mysql+pymysql://root:root@127.0.0.1:3306/my_web"
+          LLM_MODEL: test-default-model
+        run: uv run alembic upgrade head

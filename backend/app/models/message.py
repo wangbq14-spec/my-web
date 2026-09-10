@@ -8,6 +8,7 @@ from app.db.base import Base
 from app.models.user import utcnow_naive
 
 if TYPE_CHECKING:
+    from app.models.beta import MessageAttachment
     from app.models.conversation import Conversation
 
 
@@ -40,3 +41,13 @@ class Message(Base):
     )
 
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")
+
+    # Image attachments bound to this message. viewonly: bindings are managed
+    # explicitly by the chat service (bind_attachments).
+    attachments: Mapped[list["MessageAttachment"]] = relationship(
+        "MessageAttachment",
+        primaryjoin="Message.id == MessageAttachment.message_id",
+        order_by="MessageAttachment.id",
+        lazy="selectin",
+        viewonly=True,
+    )

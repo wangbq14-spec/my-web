@@ -91,12 +91,10 @@ test('侧边栏分组、项目快捷入口和独立知识库导航可用', async
   await expect(projectsToggle).toHaveAttribute('aria-expanded', 'false')
   await projectsToggle.click()
 
-  await sidebar.getByRole('button', { name: '快速新建项目', exact: true }).click()
-  await expect(page).toHaveURL(/\/projects\?create=1$/)
-  await expect(page.locator('.quick-create input')).toBeFocused()
-  await expect(page.getByRole('button', { name: '返回 Chat', exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '返回 Chat', exact: true }).click()
-  await expect(page).toHaveURL(/\/chat$/)
+  await sidebar.getByLabel('更多项目', { exact: true }).click()
+  await expect(page).toHaveURL(/\/projects$/)
+  await expect(sidebar).toBeVisible()
+  await expect(page.getByRole('button', { name: '返回 Chat', exact: true })).toHaveCount(0)
 
   await sidebar.getByRole('button', { name: '知识库', exact: true }).click()
   await expect(page).toHaveURL(/\/knowledge$/)

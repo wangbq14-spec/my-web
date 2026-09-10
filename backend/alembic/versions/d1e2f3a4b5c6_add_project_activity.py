@@ -22,12 +22,14 @@ def upgrade() -> None:
         "projects", sa.Column("last_activity_at", sa.DateTime(), nullable=True)
     )
     op.execute("UPDATE projects SET last_activity_at = created_at")
-    op.alter_column(
-        "projects",
-        "last_activity_at",
-        existing_type=sa.DateTime(),
-        nullable=False,
-    )
+    if op.get_bind().dialect.name == "mysql":
+        # ALTER COLUMN ... SET NOT NULL is not supported by SQLite's ALTER TABLE.
+        op.alter_column(
+            "projects",
+            "last_activity_at",
+            existing_type=sa.DateTime(),
+            nullable=False,
+        )
     op.create_index(
         "ix_projects_user_id_last_activity",
         "projects",

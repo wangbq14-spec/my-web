@@ -1,9 +1,8 @@
 <script setup>
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import BrandIdentity from '../components/BrandIdentity.vue'
-import ThemeToggle from '../components/ThemeToggle.vue'
 import { createConversation } from '../api/modules/conversation'
+import { createTask } from '../api/modules/workflow'
 import { listDocuments, updateDocument, uploadDocument } from '../api/modules/document'
 import { deleteProject, getProject, listProjectConversations, listProjectDocuments, updateProject } from '../api/modules/project'
 
@@ -26,6 +25,8 @@ const savingPin = ref(false)
 const instructionsDraft = ref('')
 const savingInstructions = ref(false)
 const creatingConversation = ref(false)
+const taskTitle = ref('')
+const creatingTask = ref(false)
 const uploading = ref(false)
 const updatingDocumentId = ref(null)
 const deleting = ref(false)
@@ -132,6 +133,18 @@ async function startConversation() {
   catch { errorMessage.value = '新建项目对话失败，请稍后重试' }
   finally { creatingConversation.value = false }
 }
+async function createWorkflowTask() {
+  if (!project.value || creatingTask.value) return
+  creatingTask.value = true; errorMessage.value = ''
+  const title = taskTitle.value.trim()
+  const data = { project_id: project.value.id }
+  if (title) data.title = title
+  try {
+    const createdTask = await createTask(data)
+    router.push(`/tasks/${createdTask.id}`)
+  } catch { errorMessage.value = '创建任务失败，请稍后重试' }
+  finally { creatingTask.value = false }
+}
 function openConversation(conversation) { router.push({ path: '/chat', query: { conversation_id: conversation.id, project_id: projectId.value } }) }
 function openKnowledge() { activeTab.value = 'knowledge'; nextTick(() => fileInput.value?.focus()) }
 function selectUpload(event) { const file = event.target.files?.[0]; if (file) uploadFile(file); event.target.value = '' }
@@ -175,7 +188,7 @@ onMounted(loadProject)
   <main class="project-detail-page">
     <header class="detail-header">
       <div class="header-title">
-        <BrandIdentity variant="compact" /><div v-if="project">
+        <div v-if="project">
           <div
             v-if="editingName"
             class="name-editor"
@@ -225,27 +238,6 @@ onMounted(loadProject)
             {{ project.description || '尚未添加项目说明' }}
           </p>
         </div>
-      </div>
-      <div class="header-actions">
-        <ThemeToggle /><button
-          type="button"
-          class="quiet-button header-nav-button back-chat-button"
-          @click="router.push('/chat')"
-        >
-          返回 Chat
-        </button><button
-          type="button"
-          class="quiet-button header-nav-button projects-button"
-          @click="router.push('/projects')"
-        >
-          返回项目
-        </button><button
-          type="button"
-          class="quiet-button header-nav-button knowledge-button"
-          @click="router.push('/knowledge')"
-        >
-          知识库
-        </button>
       </div>
     </header>
     <p
@@ -342,6 +334,30 @@ onMounted(loadProject)
             </button>
           </div>
         </div>
+        <form
+          class="task-create-form"
+          @submit.prevent="createWorkflowTask"
+        >
+          <div>
+            <label for="task-title">创建任务</label>
+            <p>启动一条包含调研、总结、审核和定稿的工作流。</p>
+          </div>
+          <input
+            id="task-title"
+            v-model="taskTitle"
+            type="text"
+            maxlength="200"
+            placeholder="任务标题（可选）"
+            autocomplete="off"
+          >
+          <button
+            type="submit"
+            class="primary-button create-task-button"
+            :disabled="creatingTask"
+          >
+            {{ creatingTask ? '正在创建…' : '创建任务' }}
+          </button>
+        </form>
         <div class="overview-grid">
           <section class="overview-card">
             <div class="card-heading">
@@ -582,4 +598,9 @@ onMounted(loadProject)
 .document-list li > .document-actions { display: flex; min-width: auto; align-items: center; gap: var(--space-2); overflow: visible; }
 .linked-list .document-project-button { display: inline-flex; width: auto; min-height: var(--space-9); align-items: center; border: 1px solid var(--color-border); padding: var(--space-1) var(--space-3); text-align: center; }
 .linked-list .document-project-button:hover { background: var(--color-surface-hover); color: var(--color-accent); }
+.task-create-form { display: grid; grid-template-columns: minmax(190px, .75fr) minmax(220px, 1fr) auto; gap: var(--space-4); align-items: center; padding: var(--space-4); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-xl); background: var(--color-surface-sunken); }
+.task-create-form label { font-weight: 700; }
+.task-create-form p { color: var(--color-text-secondary); font-size: var(--text-xs); }
+.task-create-form input { width: 100%; min-height: var(--space-11); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: var(--space-2) var(--space-3); background: var(--color-surface); color: inherit; font: inherit; }
+@media (max-width: 680px) { .task-create-form { grid-template-columns: 1fr; }.task-create-form .create-task-button { width: 100%; } }
 </style>

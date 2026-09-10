@@ -33,16 +33,6 @@ describe('ProjectsView', () => {
     expect(wrapper.text()).toContain('2 份资料')
   })
 
-  it('provides direct Chat and Knowledge entries', async () => {
-    const wrapper = await mountProjects()
-
-    await wrapper.get('.back-chat-button').trigger('click')
-    expect(routerMock.push).toHaveBeenCalledWith('/chat')
-
-    await wrapper.get('.knowledge-button').trigger('click')
-    expect(routerMock.push).toHaveBeenLastCalledWith('/knowledge')
-  })
-
   it('filters projects locally and keeps a recent-project section', async () => {
     listProjects.mockResolvedValue([project, { ...project, id: 8, name: '学习资料', description: '课程笔记' }])
     const wrapper = await mountProjects()
@@ -53,15 +43,31 @@ describe('ProjectsView', () => {
     expect(wrapper.text()).not.toContain('产品发布')
   })
 
-  it('applies a lightweight template in the project sheet', async () => {
+  it('applies the classroom learning template in the project sheet', async () => {
     listProjects.mockResolvedValue([])
     const wrapper = await mountProjects()
     expect(wrapper.find('.header-actions .primary-button').exists()).toBe(false)
     await wrapper.get('.quick-create-options').trigger('click')
     await wrapper.get('.template-list button:first-child').trigger('click')
 
-    expect(wrapper.get('.project-editor textarea').element.value).toContain('整理研究问题')
-    expect(wrapper.findAll('.project-editor textarea')[1].element.value).toContain('研究问题')
+    expect(wrapper.get('.project-editor textarea').element.value).toContain('学概念、看代码、查报错')
+    expect(wrapper.findAll('.project-editor textarea')[1].element.value).toContain('优先帮助我理解概念、代码逻辑、错误原因')
+    expect(wrapper.findAll('.project-editor textarea')[1].element.value).toContain('解释为什么，而不是只给最终代码')
+  })
+
+  it('offers blank, classroom, interview-prep and course-KB templates', async () => {
+    listProjects.mockResolvedValue([])
+    const wrapper = await mountProjects()
+    await wrapper.get('.quick-create-options').trigger('click')
+    const names = wrapper.findAll('.template-list button').map((button) => button.text())
+    expect(names).toContain('空白项目')
+    expect(names).toContain('AI 大模型应用开发')
+    expect(names).toContain('面试复习')
+    expect(names).toContain('课程知识库')
+    // 面试复习 template fills its own instructions.
+    const interview = wrapper.findAll('.template-list button').find((b) => b.text() === '面试复习')
+    await interview.trigger('click')
+    expect(wrapper.findAll('.project-editor textarea')[1].element.value).toContain('面试')
   })
 
   it('shows the Omnixa empty state', async () => {

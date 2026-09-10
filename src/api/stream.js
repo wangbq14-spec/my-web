@@ -49,7 +49,16 @@ async function streamRequest({
     let message = '请求失败'
     try {
       const body = await response.json()
-      message = body?.detail || body?.message || message
+      const detail = body?.detail
+      if (Array.isArray(detail)) {
+        // Pydantic/FastAPI validation error list (e.g. 422). Surface a clean,
+        // user-facing message instead of raw validation JSON.
+        message = response.status === 422
+          ? '请输入内容或添加图片。'
+          : (detail.map((item) => item?.msg).filter(Boolean).join('；') || '请求参数有误')
+      } else {
+        message = detail || body?.message || message
+      }
     } catch {
       // 忽略响应体解析失败
     }
@@ -125,6 +134,8 @@ async function streamRequest({
 export function streamAgent({
   conversationId,
   content,
+  modelTier = 'auto',
+  attachmentIds = [],
   signal,
   onStart,
   onAgentStep,
@@ -137,7 +148,7 @@ export function streamAgent({
   return streamRequest({
     conversationId,
     path: 'agent/stream',
-    body: { content },
+    body: { content, model_tier: modelTier, ...(attachmentIds.length ? { attachment_ids: attachmentIds } : {}) },
     signal,
     onStart,
     onAgentStep,
@@ -154,6 +165,8 @@ export function streamChat({
   content,
   useRag = false,
   topK = 5,
+  modelTier = 'auto',
+  attachmentIds = [],
   signal,
   onStart,
   onDelta,
@@ -161,7 +174,10 @@ export function streamChat({
   onDone,
   onError,
 }) {
-  const body = useRag ? { content, use_rag: true, top_k: topK } : { content }
+  const body = useRag
+    ? { content, use_rag: true, top_k: topK, model_tier: modelTier }
+    : { content, model_tier: modelTier }
+  if (attachmentIds.length) body.attachment_ids = attachmentIds
   return streamRequest({
     conversationId,
     path: 'chat/stream',

@@ -80,6 +80,41 @@ describe('RegisterView', () => {
     expect(router.replace).toHaveBeenCalledWith('/chat')
   })
 
+  it('sends the invite code when one is provided', async () => {
+    const wrapper = mount(RegisterView)
+
+    await wrapper.find('#email').setValue('bob@example.com')
+    await wrapper.find('#username').setValue('bob')
+    await wrapper.find('#password').setValue('password-123')
+    await wrapper.find('#inviteCode').setValue('CLASS-A')
+    await wrapper.find('form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(authStore.register).toHaveBeenCalledWith({
+      email: 'bob@example.com',
+      username: 'bob',
+      password: 'password-123',
+      invite_code: 'CLASS-A',
+    })
+    expect(router.replace).toHaveBeenCalledWith('/chat')
+  })
+
+  it('omits the invite code when left empty', async () => {
+    const wrapper = mount(RegisterView)
+
+    await wrapper.find('#email').setValue('carol@example.com')
+    await wrapper.find('#username').setValue('carol')
+    await wrapper.find('#password').setValue('password-123')
+    await wrapper.find('form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(authStore.register).toHaveBeenCalledWith({
+      email: 'carol@example.com',
+      username: 'carol',
+      password: 'password-123',
+    })
+  })
+
   it('shows the registration error when registration fails', async () => {
     authStore.register.mockRejectedValue({ message: '该邮箱已被注册' })
     const wrapper = mount(RegisterView)

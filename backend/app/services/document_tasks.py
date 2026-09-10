@@ -33,7 +33,7 @@ class RQDocumentTaskDispatcher(DocumentTaskDispatcher):
 
     def _get_queue(self) -> Queue:
         if self._queue is None:
-            connection = redis.Redis.from_url(settings.REDIS_URL)
+            connection = redis.Redis.from_url(settings.REDIS_URL, protocol=2)
             self._queue = Queue(settings.DOCUMENT_TASK_QUEUE, connection=connection)
         return self._queue
 

@@ -108,6 +108,28 @@ def test_normal_response_converted():
     assert resp.model == "gpt-test"
 
 
+def test_normal_response_includes_usage_and_provider():
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "model": "gpt-test",
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": 5,
+                    "total_tokens": 8,
+                },
+            },
+        )
+
+    response = _provider(handler).complete([LLMMessage(role="user", content="hi")])
+
+    assert response.provider == "openai_compatible"
+    assert response.usage is not None
+    assert response.usage.total_tokens == 8
+
+
 def test_model_override():
     captured = {}
 

@@ -1,35 +1,16 @@
 <script setup>
 import { onMounted, ref } from 'vue'
+import { applyTheme, readTheme } from '../utils/theme'
 
 const theme = ref('light')
 
-function readTheme() {
-  if (typeof document === 'undefined') return 'light'
-  const activeTheme = document.documentElement.dataset.theme
-  if (activeTheme === 'dark' || activeTheme === 'light') return activeTheme
-
-  try {
-    return window.localStorage.getItem('omnixa-theme') === 'dark' ? 'dark' : 'light'
-  } catch {
-    return 'light'
-  }
-}
-
-function applyTheme(nextTheme) {
-  theme.value = nextTheme
-  document.documentElement.dataset.theme = nextTheme
-  try {
-    window.localStorage.setItem('omnixa-theme', nextTheme)
-  } catch {
-    // Theme preference remains available for the current session.
-  }
-}
-
 function toggleTheme() {
-  applyTheme(theme.value === 'light' ? 'dark' : 'light')
+  theme.value = applyTheme(theme.value === 'light' ? 'dark' : 'light')
 }
 
-onMounted(() => applyTheme(readTheme()))
+onMounted(() => {
+  theme.value = applyTheme(readTheme())
+})
 </script>
 
 <template>

@@ -6,10 +6,12 @@ const routeMock = vi.hoisted(() => ({ params: { id: '7' } }))
 const routerMock = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn() }))
 vi.mock('../api/modules/project', () => ({ getProject: vi.fn(), listProjectConversations: vi.fn(), listProjectDocuments: vi.fn(), updateProject: vi.fn(), deleteProject: vi.fn() }))
 vi.mock('../api/modules/conversation', () => ({ createConversation: vi.fn() }))
+vi.mock('../api/modules/workflow', () => ({ createTask: vi.fn() }))
 vi.mock('../api/modules/document', () => ({ listDocuments: vi.fn(), updateDocument: vi.fn(), uploadDocument: vi.fn() }))
 vi.mock('vue-router', () => ({ useRoute: () => routeMock, useRouter: () => routerMock }))
 
 import { createConversation } from '../api/modules/conversation'
+import { createTask } from '../api/modules/workflow'
 import { getProject, listProjectConversations, listProjectDocuments, updateProject } from '../api/modules/project'
 import { listDocuments, updateDocument, uploadDocument } from '../api/modules/document'
 
@@ -40,19 +42,6 @@ describe('ProjectDetailView', () => {
     expect(wrapper.text()).toContain('brief.pdf')
     expect(wrapper.text()).toContain('可用')
     expect(wrapper.get('.project-tabs').text()).toContain('Knowledge')
-  })
-
-  it('provides direct Chat, project-list, and Knowledge entries', async () => {
-    const wrapper = await mountDetail()
-
-    await wrapper.get('.back-chat-button').trigger('click')
-    expect(routerMock.push).toHaveBeenCalledWith('/chat')
-
-    await wrapper.get('.projects-button').trigger('click')
-    expect(routerMock.push).toHaveBeenLastCalledWith('/projects')
-
-    await wrapper.get('.knowledge-button').trigger('click')
-    expect(routerMock.push).toHaveBeenLastCalledWith('/knowledge')
   })
 
   it('saves a renamed project', async () => {
@@ -120,6 +109,28 @@ describe('ProjectDetailView', () => {
     await wrapper.find('.overview-actions .primary-button').trigger('click')
     expect(createConversation).toHaveBeenCalledWith({ project_id: '7' })
     expect(routerMock.push).toHaveBeenCalledWith({ path: '/chat', query: { conversation_id: 12, project_id: '7' } })
+  })
+
+  it('creates a workflow task with an optional title and opens its detail', async () => {
+    createTask.mockResolvedValue({ id: 18, project_id: 7, title: '发布调研' })
+    const wrapper = await mountDetail()
+
+    await wrapper.get('#task-title').setValue('  发布调研  ')
+    await wrapper.get('.task-create-form').trigger('submit')
+    await flushPromises()
+
+    expect(createTask).toHaveBeenCalledWith({ project_id: 7, title: '发布调研' })
+    expect(routerMock.push).toHaveBeenCalledWith('/tasks/18')
+  })
+
+  it('omits an empty optional task title', async () => {
+    createTask.mockResolvedValue({ id: 19, project_id: 7 })
+    const wrapper = await mountDetail()
+
+    await wrapper.get('.task-create-form').trigger('submit')
+    await flushPromises()
+
+    expect(createTask).toHaveBeenCalledWith({ project_id: 7 })
   })
 
   it('uploads Knowledge files with the current project id', async () => {

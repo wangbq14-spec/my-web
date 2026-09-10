@@ -84,12 +84,14 @@ def test_document_async_migration_defines_new_columns_and_unique_generation_inde
 
 def test_alembic_has_a_single_head():
     backend_dir = Path(__file__).resolve().parents[1]
+    # Invoke via `python -m alembic` (not the `alembic` console-script trampoline,
+    # which fails to canonicalize its path on Windows under a non-ASCII cwd).
     result = subprocess.run(
-        ["uv", "run", "alembic", "heads"],
+        ["uv", "run", "python", "-m", "alembic", "heads"],
         cwd=backend_dir,
         check=True,
         capture_output=True,
         text=True,
     )
     lines = [line for line in result.stdout.splitlines() if line.strip()]
-    assert lines == ["e2f3a4b5c6d7 (head)"]
+    assert lines == ["d3e4f5a6b7c8 (head)"]

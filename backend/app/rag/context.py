@@ -62,9 +62,10 @@ def build_rag_system_prompt(
             if len(content) < len(chunk.content):
                 break
 
+    joined = "\n\n".join(documents)
     return (
         f"{instructions}\n\n"
         "<retrieved_documents>\n"
-        f"{'\n\n'.join(documents)}\n"
+        f"{joined}\n"
         "</retrieved_documents>"
     )

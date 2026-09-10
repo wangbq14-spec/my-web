@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from app.models.conversation import Conversation
     from app.models.document import Document
     from app.models.user import User
+    from app.models.workflow import TaskRun
 
 
 class Project(Base):
@@ -55,3 +56,4 @@ class Project(Base):
         back_populates="project"
     )
     documents: Mapped[list["Document"]] = relationship(back_populates="project")
+    task_runs: Mapped[list["TaskRun"]] = relationship(back_populates="project")

@@ -5,11 +5,13 @@ import pytest
 from sqlalchemy import select
 
 from app.llm.base import LLMError, LLMResponse, LLMTimeoutError, LLMUpstreamError
+from app.models.billing import UserWallet
 from app.models.message import Message
 from app.models.project import Project
 from app.models.user import User
 from app.schemas.conversation import ConversationCreate
 from app.services import chat
+from app.services.billing import InsufficientCredits, get_balance
 from app.services.chat import ChatResult, send_chat_message
 from app.services.conversation import create_conversation
 
@@ -38,11 +40,40 @@ def _create_user(db, username="alice"):
     user = User(email=f"{username}@example.com", username=username, hashed_password="x")
     db.add(user)
     db.flush()
+    db.add(UserWallet(user_id=user.id, balance=100000))
+    db.flush()
     return user.id
 
 
 def _create_conversation(db, user_id, model=None):
     return create_conversation(db, user_id, ConversationCreate(title="c1", model=model))
+
+
+def test_text_chat_without_usage_charges_floor_credit(db, fake_provider):
+    # P1-1: a provider that omits usage (streaming fallback) must still charge
+    # the per-request floor, never zero credits.
+    user_id = _create_user(db, "alice")
+    conv = _create_conversation(db, user_id)
+    before = get_balance(db, user_id)[0]
+
+    send_chat_message(db, user_id, conv.id, "hi")
+
+    assert get_balance(db, user_id)[0] == before - 1
+
+
+def test_chat_prechecks_balance_before_generation(db, fake_provider):
+    # P1-2: fail fast (402) before calling the provider when the balance cannot
+    # cover the estimated turn, instead of burning tokens then failing after.
+    user_id = _create_user(db, "alice")
+    wallet = db.scalar(select(UserWallet).where(UserWallet.user_id == user_id))
+    wallet.balance = 0
+    db.flush()
+    conv = _create_conversation(db, user_id)
+
+    with pytest.raises(InsufficientCredits):
+        send_chat_message(db, user_id, conv.id, "hi")
+
+    assert fake_provider.calls == []
 
 
 def test_send_chat_message_success(db, fake_provider):
@@ -58,22 +89,24 @@ def test_send_chat_message_success(db, fake_provider):
     assert result.assistant_message.model == "fake-model"
 
 
-def test_conversation_model_passed_to_provider(db, fake_provider):
+def test_requested_model_tier_overrides_conversation_model(db, fake_provider, monkeypatch):
     user_id = _create_user(db, "alice")
+    conv = _create_conversation(db, user_id, model="gpt-4")
+    monkeypatch.setattr(chat, "resolve_model", lambda tier, explicit: "fast-model")
+
+    send_chat_message(db, user_id, conv.id, "hi", model_tier="fast")
+
+    assert fake_provider.calls[0]["model"] == "fast-model"
+
+
+def test_auto_tier_ignores_client_conversation_model(db, fake_provider):
+    user_id = _create_user(db, "alice")
+    # P1-3: auto tier must not forward the client's conversation.model verbatim.
     conv = _create_conversation(db, user_id, model="gpt-4")
 
     send_chat_message(db, user_id, conv.id, "hi")
 
-    assert fake_provider.calls[0]["model"] == "gpt-4"
-
-
-def test_conversation_model_none_passes_none(db, fake_provider):
-    user_id = _create_user(db, "alice")
-    conv = _create_conversation(db, user_id, model=None)
-
-    send_chat_message(db, user_id, conv.id, "hi")
-
-    assert fake_provider.calls[0]["model"] is None
+    assert fake_provider.calls[0]["model"] == "test-default-model"
 
 
 def test_history_sorted_asc(db, fake_provider):

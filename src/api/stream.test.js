@@ -30,6 +30,12 @@ function createFakeStream(chunks) {
 }
 
 describe('streamChat', () => {
+  it.each([streamChat, streamAgent])('includes uploaded attachment IDs', async (stream) => {
+    const fetchMock = vi.fn().mockResolvedValue(createFakeStream([]))
+    vi.stubGlobal('fetch', fetchMock)
+    await stream({ conversationId: 1, content: '', attachmentIds: [12, 13], useRag: true })
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).attachment_ids).toEqual([12, 13])
+  })
   beforeEach(() => {
     localStorage.clear()
     localStorage.setItem('access_token', 'test-token')
@@ -48,7 +54,7 @@ describe('streamChat', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(url).toContain('/conversations/1/chat/stream')
     expect(options.method).toBe('POST')
-    expect(JSON.parse(options.body)).toEqual({ content: '你好' })
+    expect(JSON.parse(options.body)).toEqual({ content: '你好', model_tier: 'auto' })
   })
 
   it('带 Authorization header', async () => {
@@ -115,7 +121,24 @@ describe('streamChat', () => {
     await streamChat({ conversationId: 1, content: 'hi', useRag: true, topK: 8 })
 
     const [, options] = fetchMock.mock.calls[0]
-    expect(JSON.parse(options.body)).toEqual({ content: 'hi', use_rag: true, top_k: 8 })
+    expect(JSON.parse(options.body)).toEqual({
+      content: 'hi',
+      use_rag: true,
+      top_k: 8,
+      model_tier: 'auto',
+    })
+  })
+
+  it('forwards an explicitly selected model tier', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(createFakeStream(['event: done\ndata: {}\n\n']))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await streamChat({ conversationId: 1, content: 'hi', modelTier: 'reasoning' })
+
+    const [, options] = fetchMock.mock.calls[0]
+    expect(JSON.parse(options.body)).toEqual({ content: 'hi', model_tier: 'reasoning' })
   })
 
   it('error event 正确转换', async () => {
@@ -151,6 +174,28 @@ describe('streamChat', () => {
       type: 'http',
       status: 404,
       message: '会话不存在',
+    })
+  })
+
+  it('422 validation error surfaces a clean message, not raw JSON', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 422,
+        async json() {
+          return { detail: [{ type: 'value_error', msg: '请输入内容或添加图片。' }] }
+        },
+      }),
+    )
+
+    const onError = vi.fn()
+    await streamChat({ conversationId: 1, content: '', onError })
+
+    expect(onError).toHaveBeenCalledWith({
+      type: 'http',
+      status: 422,
+      message: '请输入内容或添加图片。',
     })
   })
 
@@ -201,7 +246,7 @@ describe('streamAgent', () => {
     const [url, options] = fetchMock.mock.calls[0]
     expect(url).toContain('/conversations/1/agent/stream')
     expect(options.method).toBe('POST')
-    expect(options.body).toBe(JSON.stringify({ content: 'research this' }))
+    expect(options.body).toBe(JSON.stringify({ content: 'research this', model_tier: 'auto' }))
     expect(options.headers.Authorization).toBe('Bearer test-token')
   })
 

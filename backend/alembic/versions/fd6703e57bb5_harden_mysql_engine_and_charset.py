@@ -19,6 +19,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # The ALTER TABLE ... ENGINE/CONVERT TO syntax is MySQL-only. Skip it on
+    # other dialects (SQLite in tests/CI) so `alembic upgrade head` stays a
+    # portable smoke signal; on MySQL it still applies the charset hardening.
+    if op.get_bind().dialect.name != "mysql":
+        return
     op.execute(
         sa.text(
             """

@@ -1,19 +1,34 @@
+import base64
+import binascii
 import json
+from pathlib import Path
+
+from app.core.config import settings
 from collections.abc import Iterator, Sequence
 
 import httpx
 
 from app.llm.base import (
+    ImagePart,
+    TextPart,
     LLMChunk,
     LLMConfigurationError,
     LLMError,
+    LLMImageError,
     LLMMessage,
     LLMProvider,
     LLMResponse,
     LLMTimeoutError,
     LLMToolCall,
     LLMUpstreamError,
+    LLMUsage,
 )
+
+
+# Minimal instruction injected only into the provider request when a message is
+# image-only. It is never persisted as user text and never written back to the
+# conversation.
+_VISION_DEFAULT_INSTRUCTION = "请描述并回应这张图片。"
 
 
 class OpenAICompatibleProvider(LLMProvider):
@@ -38,8 +53,58 @@ class OpenAICompatibleProvider(LLMProvider):
         self._client = client if client is not None else httpx.Client(timeout=timeout)
 
     @staticmethod
+    def _image_url(part: ImagePart) -> str:
+        value = part.data_url_or_path
+        max_bytes = settings.MAX_CHAT_IMAGE_SIZE
+        max_encoded = settings.MAX_CHAT_IMAGE_BASE64_SIZE
+        prefix = f"data:{part.mime_type};base64,"
+        if value.startswith("data:"):
+            if not value.startswith(prefix):
+                raise LLMImageError("image_format", "图片格式不支持，仅支持 JPEG、PNG、WebP")
+            encoded = value[len(prefix):]
+            if len(encoded) > max_encoded:
+                raise LLMImageError("image_too_large", "图片超过大小限制，请压缩后重新上传")
+            try:
+                raw = base64.b64decode(encoded, validate=True)
+            except (ValueError, binascii.Error):
+                raise LLMImageError("image_format", "图片格式不支持，仅支持 JPEG、PNG、WebP") from None
+        else:
+            if "://" in value:
+                raise LLMImageError("image_format", "不支持远程图片地址")
+            try:
+                # Bounded read, including when a file grows after upload.
+                with Path(value).open("rb") as source:
+                    raw = source.read(max_bytes + 1)
+            except (OSError, ValueError):
+                raise LLMImageError("image_read_failed", "图片读取失败，请重新上传") from None
+            if len(raw) > max_bytes:
+                raise LLMImageError("image_too_large", "图片超过大小限制，请压缩后重新上传")
+            encoded = base64.b64encode(raw).decode("ascii")
+        if not raw:
+            raise LLMImageError("image_read_failed", "图片读取失败，请重新上传")
+        if len(raw) > max_bytes or len(encoded) > max_encoded:
+            raise LLMImageError("image_too_large", "图片超过大小限制，请压缩后重新上传")
+        return prefix + encoded
+
+    @staticmethod
     def _serialize_message(message: LLMMessage) -> dict:
         serialized = {"role": message.role, "content": message.content}
+        if message.content_parts is not None:
+            parts = []
+            if message.content:
+                parts.append({"type": "text", "text": message.content})
+            for part in message.content_parts:
+                if isinstance(part, TextPart):
+                    if not message.content:
+                        parts.append({"type": "text", "text": part.text})
+                elif isinstance(part, ImagePart):
+                    parts.append({"type": "image_url", "image_url": {
+                        "url": OpenAICompatibleProvider._image_url(part)}})
+            if parts and not any(item.get("type") == "text" for item in parts):
+                # Some OpenAI-compatible vision endpoints require a text part
+                # alongside images; inject a minimal internal instruction.
+                parts.insert(0, {"type": "text", "text": _VISION_DEFAULT_INSTRUCTION})
+            serialized["content"] = parts
         if message.tool_calls is not None:
             serialized["tool_calls"] = [
                 {
@@ -91,6 +156,21 @@ class OpenAICompatibleProvider(LLMProvider):
             )
         return tool_calls
 
+    @staticmethod
+    def _parse_usage(raw_usage: object) -> LLMUsage | None:
+        if raw_usage is None:
+            return None
+        if not isinstance(raw_usage, dict):
+            raise LLMError("上游返回格式异常")
+        values: dict[str, int] = {}
+        for field in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            value = raw_usage.get(field)
+            if value is not None:
+                if not isinstance(value, int) or isinstance(value, bool):
+                    raise LLMError("上游返回格式异常")
+                values[field] = value
+        return LLMUsage(**values)
+
     def complete(
         self,
         messages: Sequence[LLMMessage],
@@ -138,6 +218,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 raise TypeError
             content = message.get("content")
             tool_calls = self._parse_tool_calls(message.get("tool_calls"))
+            usage = self._parse_usage(data.get("usage"))
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMError("上游返回格式异常") from exc
 
@@ -155,6 +236,8 @@ class OpenAICompatibleProvider(LLMProvider):
             content=content,
             tool_calls=tool_calls or None,
             model=data.get("model") or effective_model,
+            usage=usage,
+            provider="openai_compatible",
         )
 
     def stream(
@@ -163,6 +246,16 @@ class OpenAICompatibleProvider(LLMProvider):
         *,
         model: str | None = None,
         tools: list[dict] | None = None,
+    ) -> Iterator[LLMChunk]:
+        yield from self._stream(messages, model=model, tools=tools, include_usage=True)
+
+    def _stream(
+        self,
+        messages: Sequence[LLMMessage],
+        *,
+        model: str | None = None,
+        tools: list[dict] | None = None,
+        include_usage: bool,
     ) -> Iterator[LLMChunk]:
         effective_model = model or self.model
         if not effective_model:
@@ -173,6 +266,8 @@ class OpenAICompatibleProvider(LLMProvider):
             "messages": [self._serialize_message(message) for message in messages],
             "stream": True,
         }
+        if include_usage:
+            payload["stream_options"] = {"include_usage": True}
         if tools:
             payload["tools"] = tools
         headers = {
@@ -205,10 +300,13 @@ class OpenAICompatibleProvider(LLMProvider):
 
                     if not isinstance(obj, dict):
                         raise LLMError("上游流式数据格式异常")
+                    usage = self._parse_usage(obj.get("usage"))
                     choices = obj.get("choices")
                     if not isinstance(choices, list):
                         raise LLMError("上游流式数据格式异常")
                     if not choices:
+                        if usage is not None:
+                            yield LLMChunk(usage=usage, model=obj.get("model"))
                         continue
                     choice = choices[0]
                     if not isinstance(choice, dict):
@@ -225,6 +323,9 @@ class OpenAICompatibleProvider(LLMProvider):
                         if not isinstance(content, str):
                             raise LLMError("上游流式数据格式异常")
                         yield LLMChunk(content=content, model=chunk_model)
+
+                    if usage is not None:
+                        yield LLMChunk(usage=usage, model=chunk_model)
 
                     if use_tools and "tool_calls" in delta:
                         raw_tool_calls = delta["tool_calls"]
@@ -295,6 +396,11 @@ class OpenAICompatibleProvider(LLMProvider):
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError("LLM 请求超时") from exc
         except httpx.HTTPStatusError as exc:
+            if include_usage and exc.response.status_code == 400:
+                yield from self._stream(
+                    messages, model=model, tools=tools, include_usage=False
+                )
+                return
             raise LLMUpstreamError(
                 f"上游服务错误（HTTP {exc.response.status_code}）"
             ) from exc

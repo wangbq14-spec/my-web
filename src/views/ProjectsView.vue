@@ -2,7 +2,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import BrandIdentity from '../components/BrandIdentity.vue'
-import ThemeToggle from '../components/ThemeToggle.vue'
 import { createProject, deleteProject, listProjects, updateProject } from '../api/modules/project'
 
 const router = useRouter()
@@ -23,10 +22,9 @@ const formNameInput = ref(null)
 const quickCreateInput = ref(null)
 
 const templates = [
-  { name: '学习研究', description: '整理研究问题、资料与结论。', instructions: '帮助我明确研究问题，优先给出可信依据，输出清晰的学习笔记和下一步。' },
-  { name: '产品开发', description: '推进产品设计、开发与发布。', instructions: '以产品目标和用户价值为先。用简洁的结构说明方案、风险、验收标准和下一步。' },
-  { name: '公司知识库', description: '沉淀团队资料与工作规范。', instructions: '基于项目资料回答。区分事实和推测，保持专业、准确，并标明需要确认的内容。' },
-  { name: '个人项目', description: '聚焦个人目标与持续推进。', instructions: '帮助我拆解目标、记录决策并维持可执行的下一步，语气直接且鼓励。' },
+  { name: 'AI 大模型应用开发', description: '学概念、看代码、查报错，适合课程学习。', instructions: '优先帮助我理解概念、代码逻辑、错误原因。回答应解释为什么，而不是只给最终代码。使用项目知识库时优先引用上传资料。' },
+  { name: '面试复习', description: '概念问答、模拟提问与复盘。', instructions: '以面试复习为目标：先给简洁结论，再展开原理与常见追问方向；多用对比和示例帮助记忆。' },
+  { name: '课程知识库', description: '沉淀课程资料，基于资料回答。', instructions: '基于上传的课程资料回答，优先引用资料内容；资料未覆盖的部分要明确说明，不编造。' },
   { name: '空白项目', description: '', instructions: '' },
 ]
 
@@ -206,26 +204,8 @@ onBeforeUnmount(() => { mounted = false })
   <main class="projects-page">
     <header class="projects-header">
       <div>
-        <BrandIdentity variant="compact" />
         <h1>项目</h1>
         <p>把对话、资料和工作说明组织到同一个上下文中。</p>
-      </div>
-      <div class="header-actions">
-        <button
-          type="button"
-          class="quiet-button header-nav-button back-chat-button"
-          @click="router.push('/chat')"
-        >
-          返回 Chat
-        </button>
-        <button
-          type="button"
-          class="quiet-button header-nav-button knowledge-button"
-          @click="router.push('/knowledge')"
-        >
-          知识库
-        </button>
-        <ThemeToggle />
       </div>
     </header>
 

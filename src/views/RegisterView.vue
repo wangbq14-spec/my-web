@@ -11,6 +11,7 @@ const authStore = useAuthStore()
 const email = ref('')
 const username = ref('')
 const password = ref('')
+const inviteCode = ref('')
 const errorMessage = ref('')
 
 function validate() {
@@ -32,6 +33,7 @@ async function handleSubmit() {
       email: email.value.trim(),
       username: username.value.trim(),
       password: password.value,
+      ...(inviteCode.value.trim() ? { invite_code: inviteCode.value.trim() } : {}),
     })
     router.replace('/chat')
   } catch (error) {
@@ -104,6 +106,25 @@ async function handleSubmit() {
           autocomplete="new-password"
           placeholder="请输入至少 8 个字符的密码"
         >
+      </div>
+
+      <div class="field">
+        <label
+          class="label"
+          for="inviteCode"
+        >邀请码（可选）</label>
+        <input
+          id="inviteCode"
+          v-model="inviteCode"
+          type="text"
+          name="invite_code"
+          autocomplete="off"
+          maxlength="64"
+          placeholder="请输入班级邀请码"
+        >
+        <p class="field-hint">
+          有班级邀请码可填写，用于加入课程班级
+        </p>
       </div>
 
       <p
@@ -191,6 +212,12 @@ async function handleSubmit() {
 .label {
   font-size: 14px;
   color: var(--color-text-primary);
+}
+
+.field-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
 }
 
 input {

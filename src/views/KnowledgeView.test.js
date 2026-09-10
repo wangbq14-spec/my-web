@@ -106,16 +106,6 @@ describe('KnowledgeView', () => {
     expect(routerMock.push).toHaveBeenCalledWith({ path: '/chat', query: { mode: 'rag' } })
   })
 
-  it('provides direct Chat and project entries', async () => {
-    const wrapper = await mountKnowledge()
-
-    await wrapper.get('.back-chat-button').trigger('click')
-    expect(routerMock.push).toHaveBeenCalledWith('/chat')
-
-    await wrapper.get('.projects-button').trigger('click')
-    expect(routerMock.push).toHaveBeenLastCalledWith('/projects')
-  })
-
   it('renders a processing document with text status', async () => {
     listDocuments.mockResolvedValue([{ ...readyDocument, status: 'processing' }])
     const wrapper = await mountKnowledge()
@@ -128,7 +118,8 @@ describe('KnowledgeView', () => {
     listDocuments.mockResolvedValue([queuedDocument])
     const wrapper = await mountKnowledge()
 
-    expect(wrapper.text()).toContain('处理中')
+    expect(wrapper.text()).toContain('排队中')
+    expect(wrapper.text()).toContain('等待后台处理，完成后即可使用')
   })
 
   it('starts polling queued and processing documents restored from the list', async () => {
@@ -201,8 +192,9 @@ describe('KnowledgeView', () => {
     const wrapper = await mountKnowledge()
 
     await selectFile(wrapper, new File(['hello'], 'notes.txt', { type: 'text/plain' }))
-    await wrapper.find('.upload-btn').trigger('click')
-    await flushPromises()
+    await wrapper.vm.$.setupState.handleUpload()
+    await Promise.resolve()
+    await wrapper.vm.$nextTick()
 
     expect(wrapper.text()).toContain('handbook.pdf')
     expect(wrapper.find('.refresh-error-banner').text()).toContain('资料刷新失败')
@@ -286,6 +278,25 @@ describe('KnowledgeView', () => {
     wrapper.unmount()
   })
 
+  it('keeps slow-polling after the fast window ends while a document is non-terminal', async () => {
+    vi.useFakeTimers()
+    listDocuments.mockResolvedValue([queuedDocument])
+    getDocument.mockResolvedValue(queuedDocument)
+    const wrapper = await mountKnowledge()
+
+    await vi.advanceTimersByTimeAsync(30000)
+    expect(getDocument).toHaveBeenCalledTimes(15)
+    expect(wrapper.text()).toContain('仍在准备中，完成后会自动更新；你也可以刷新查看最新状态')
+
+    // Instead of stopping, polling continues at a slow 20s cadence so a later
+    // ready/failed transition still updates the UI automatically.
+    await vi.advanceTimersByTimeAsync(20000)
+    expect(getDocument).toHaveBeenCalledTimes(16)
+    await vi.advanceTimersByTimeAsync(20000)
+    expect(getDocument).toHaveBeenCalledTimes(17)
+    wrapper.unmount()
+  })
+
   it('restarts polling and clears the refresh hint when the document list is refreshed', async () => {
     vi.useFakeTimers()
     listDocuments.mockResolvedValue([queuedDocument])
@@ -296,9 +307,11 @@ describe('KnowledgeView', () => {
     expect(wrapper.text()).toContain('仍在准备中，完成后会自动更新；你也可以刷新查看最新状态')
 
     await wrapper.vm.$.setupState.loadDocuments()
+    await flushPromises()
 
-    expect(getDocument).toHaveBeenCalledTimes(16)
     expect(wrapper.text()).not.toContain('仍在准备中，完成后会自动更新；你也可以刷新查看最新状态')
+    await vi.advanceTimersByTimeAsync(20000)
+    expect(getDocument).toHaveBeenCalledTimes(16)
     wrapper.unmount()
   })
 
@@ -329,7 +342,7 @@ describe('KnowledgeView', () => {
     await wrapper.find('.retry-btn').trigger('click')
     await flushPromises()
     expect(retryDocument).toHaveBeenCalledWith(1)
-    expect(wrapper.text()).toContain('处理中')
+    expect(wrapper.text()).toContain('排队中')
     expect(getDocument).toHaveBeenCalledTimes(1)
 
     pendingPoll.resolve({ ...queuedDocument, status: 'processing' })
@@ -501,7 +514,7 @@ describe('KnowledgeView', () => {
     expect(wrapper.text()).toContain('还没有添加资料')
   })
 
-  it('moves focus to the back button when the deleted trigger no longer exists', async () => {
+  it('moves focus to the Chat materials CTA when the deleted trigger no longer exists', async () => {
     listDocuments.mockResolvedValueOnce([readyDocument]).mockResolvedValueOnce([])
     deleteDocument.mockResolvedValue()
     const wrapper = mount(KnowledgeView, { attachTo: document.body })
@@ -512,7 +525,7 @@ describe('KnowledgeView', () => {
     await flushPromises()
 
     expect(wrapper.find('.delete-btn').exists()).toBe(false)
-    expect(document.activeElement).toBe(wrapper.find('.back-chat-button').element)
+    expect(document.activeElement).toBe(wrapper.find('.chat-link').element)
     wrapper.unmount()
   })
 

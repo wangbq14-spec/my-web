@@ -85,6 +85,21 @@ def test_chat_success_response_structure(client, fake_provider):
     assert data["assistant_message"]["model"] == "fake-model"
 
 
+def test_chat_forwards_model_tier(client, fake_provider, monkeypatch):
+    token = _register_and_login(client, "tiered-chat")
+    conversation_id = _create_conversation(client, token)
+    monkeypatch.setattr(chat, "resolve_model", lambda tier, explicit: "reasoning-model")
+
+    response = client.post(
+        f"/api/conversations/{conversation_id}/chat",
+        json={"content": "hi", "model_tier": "reasoning"},
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 201
+    assert fake_provider.calls[0]["model"] == "reasoning-model"
+
+
 def test_chat_own_conversation_persists_both_messages(client, db, fake_provider):
     token = _register_and_login(client, "alice")
     conv_id = _create_conversation(client, token)

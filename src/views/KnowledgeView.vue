@@ -1,8 +1,6 @@
 <script setup>
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import BrandIdentity from '../components/BrandIdentity.vue'
-import ThemeToggle from '../components/ThemeToggle.vue'
 import { deleteDocument, getDocument, listDocuments, retryDocument, uploadDocument } from '../api/modules/document'
 
 const ALLOWED_EXTENSIONS = ['.txt', '.md', '.pdf']
@@ -20,9 +18,9 @@ const selectedFile = ref(null)
 const errorMessage = ref('')
 const documentToDelete = ref(null)
 const fileInput = ref(null)
+const chatActionRef = ref(null)
 const cancelDeleteButton = ref(null)
 const deleteTriggerRef = ref(null)
-const backButton = ref(null)
 const pageContent = ref(null)
 const confirmationDialog = ref(null)
 const dragging = ref(false)
@@ -35,6 +33,9 @@ const documentVersions = new Map()
 const pollStates = new Map()
 const MAX_POLL_ATTEMPTS = 15
 const POLL_INTERVAL_MS = 2000
+// After the fast window expires, keep polling at a slow cadence so a document
+// that eventually becomes ready/failed updates without a manual refresh.
+const SLOW_POLL_INTERVAL_MS = 20000
 
 function isSupportedFile(file) {
   const filename = file?.name?.toLowerCase() || ''
@@ -67,14 +68,16 @@ function formatDate(value) {
 }
 
 function statusText(status) {
-  if (status === 'queued' || status === 'processing') return '处理中'
+  if (status === 'queued') return '排队中'
+  if (status === 'processing') return '处理中'
   if (status === 'ready') return '可用'
   if (status === 'failed') return '处理失败'
   return '状态未知'
 }
 
 function statusDescription(status) {
-  if (status === 'queued' || status === 'processing') return '正在准备，完成后即可使用'
+  if (status === 'queued') return '等待后台处理，完成后即可使用'
+  if (status === 'processing') return '正在准备，完成后即可使用'
   if (status === 'ready') return 'AI 已可在回答中参考'
   if (status === 'failed') return '资料暂时无法使用，请重新处理'
   return '暂时无法确认资料是否可用'
@@ -147,17 +150,15 @@ function stopDocumentPolling(id) {
 
 function scheduleDocumentPoll(id, state) {
   if (!isMounted || pollStates.get(id) !== state) return
-  if (state.attempts >= MAX_POLL_ATTEMPTS) {
+  if (state.attempts >= MAX_POLL_ATTEMPTS && !isPollingTimedOut(id)) {
     const document = documents.value.find((item) => item.id === id)
     if (document && !isTerminalStatus(document.status)) setPollingTimedOut(id, true)
-    stopDocumentPolling(id)
-    return
   }
-
+  const interval = isPollingTimedOut(id) ? SLOW_POLL_INTERVAL_MS : POLL_INTERVAL_MS
   state.timer = setTimeout(() => {
     state.timer = null
     pollDocument(id, state)
-  }, POLL_INTERVAL_MS)
+  }, interval)
 }
 
 async function pollDocument(id, state) {
@@ -192,9 +193,13 @@ async function pollDocument(id, state) {
 }
 
 function startDocumentPolling(id) {
-  if (!id || pollStates.has(id) || !isMounted) return
+  if (!id || !isMounted) return
 
+  // Refreshing the list (or retrying) clears a stale slow-poll hint even when
+  // this id is already being polled; the existing timer keeps running.
   setPollingTimedOut(id, false)
+  if (pollStates.has(id)) return
+
   const state = { attempts: 0, controller: null, requestSeq: 0, timer: null }
   pollStates.set(id, state)
   pollDocument(id, state)
@@ -338,7 +343,7 @@ function restoreDeleteTriggerFocus() {
       trigger.focus()
       return
     }
-    backButton.value?.focus()
+    chatActionRef.value?.focus()
   })
 }
 
@@ -432,9 +437,6 @@ onBeforeUnmount(() => {
     <div ref="pageContent">
       <header class="knowledge-header">
         <div>
-          <div class="brand">
-            <BrandIdentity variant="compact" />
-          </div>
           <h1>知识库</h1>
           <p class="header-subtitle">
             让 AI 了解你的资料
@@ -444,23 +446,8 @@ onBeforeUnmount(() => {
           </p>
         </div>
         <div class="knowledge-header-actions">
-          <ThemeToggle />
-          <button
-            ref="backButton"
-            type="button"
-            class="header-nav-button back-chat-button"
-            @click="router.push('/chat')"
-          >
-            返回 Chat
-          </button>
-          <button
-            type="button"
-            class="header-nav-button projects-button"
-            @click="router.push('/projects')"
-          >
-            项目
-          </button>
           <a
+            ref="chatActionRef"
             class="chat-link"
             href="/chat"
             @click.prevent="router.push({ path: '/chat', query: { mode: 'rag' } })"
